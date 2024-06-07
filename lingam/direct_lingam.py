@@ -28,6 +28,7 @@ class DirectLiNGAM(_BaseLiNGAM):
         prior_knowledge=None,
         apply_prior_knowledge_softly=False,
         measure="pwling",
+        enable_high_dim=True,
     ):
         """Construct a DirectLiNGAM model.
 
@@ -48,11 +49,14 @@ class DirectLiNGAM(_BaseLiNGAM):
         measure : {'pwling', 'kernel', 'pwling_fast'}, optional (default='pwling')
             Measure to evaluate independence: 'pwling' [2]_ or 'kernel' [1]_.
             For fast execution with GPU, 'pwling_fast' can be used (culingam is required).
+        enable_high_dim : boolean (default=True)
+            Whether to enable high_d_lingam or not.
         """
         super().__init__(random_state)
         self._Aknw = prior_knowledge
         self._apply_prior_knowledge_softly = apply_prior_knowledge_softly
         self._measure = measure
+        self._enable_high_dim = enable_high_dim
 
         if self._Aknw is not None:
             self._Aknw = check_array(self._Aknw)
@@ -93,6 +97,8 @@ class DirectLiNGAM(_BaseLiNGAM):
         X_ = np.copy(X)
         if self._measure == "kernel":
             X_ = scale(X_)
+        if self._enable_high_dim:
+            cov = np.cov(X_.T)
 
         for _ in range(n_features):
             if self._measure == "kernel":
@@ -101,9 +107,12 @@ class DirectLiNGAM(_BaseLiNGAM):
                 m = self._search_causal_order_gpu(X_.astype(np.float64), U.astype(np.int32))
             else:
                 m = self._search_causal_order(X_, U)
-            for i in U:
-                if i != m:
-                    X_[:, i] = self._residual(X_[:, i], X_[:, m])
+            if not self._enable_high_dim:
+                for i in U:
+                    if i != m:
+                        X_[:, i] = self._residual(X_[:, i], X_[:, m])
+            else:
+                X_[:, m] = self._residual_high_dim(X_, m, K, cov)
             K.append(m)
             U = U[U != m]
             # Update partial orders
@@ -149,6 +158,14 @@ class DirectLiNGAM(_BaseLiNGAM):
     def _residual(self, xi, xj):
         """The residual when xi is regressed on xj."""
         return xi - (np.cov(xi, xj)[0, 1] / np.var(xj)) * xj
+
+    def _residual_high_dim(self, X, m, K, cov):
+        if len(K) == 0:
+            return X[:, m]
+
+        sub_cov = cov[K][:, K]
+        beta = np.linalg.pinv(sub_cov) @ cov[K, m]
+        return X[:, m] - X[:, K] @ beta
 
     def _entropy(self, u):
         """Calculate entropy using the maximum entropy approximations."""
