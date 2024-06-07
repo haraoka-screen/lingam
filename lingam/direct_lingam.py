@@ -29,7 +29,6 @@ class DirectLiNGAM(_BaseLiNGAM):
         apply_prior_knowledge_softly=False,
         measure="pwling",
         enable_high_dim=True,
-        disable_est_adj=False,
     ):
         """Construct a DirectLiNGAM model.
 
@@ -123,10 +122,6 @@ class DirectLiNGAM(_BaseLiNGAM):
                 ]
 
         self._causal_order = K
-        if disable_est_adj:
-            self._adjacency_matrix = None
-            return None
-
         return self._estimate_adjacency_matrix(X, prior_knowledge=self._Aknw)
 
     def _extract_partial_orders(self, pk):
