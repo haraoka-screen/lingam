@@ -87,9 +87,6 @@ class DirectLiNGAM(_BaseLiNGAM):
                 if not self._apply_prior_knowledge_softly:
                     self._partial_orders = self._extract_partial_orders(self._Aknw)
 
-        # Prepare to causal discovery
-        self._prepare_to_causal_discovery(X)
-
         # Causal discovery
         U = np.arange(n_features)
         K = []
@@ -104,7 +101,9 @@ class DirectLiNGAM(_BaseLiNGAM):
                 m = self._search_causal_order_gpu(X_.astype(np.float64), U.astype(np.int32))
             else:
                 m = self._search_causal_order(X_, U)
-            X_ = self._update_residual(X_, U, K, m)
+            for i in U:
+                if i != m:
+                    X_[:, i] = self._residual(X_[:, i], X_[:, m])
             K.append(m)
             U = U[U != m]
             # Update partial orders
@@ -146,9 +145,6 @@ class DirectLiNGAM(_BaseLiNGAM):
 
         pairs = np.unique(check_pairs, axis=0)
         return pairs[:, [1, 0]]  # [to, from] -> [from, to]
-
-    def _prepare_to_causal_discovery(self, X):
-        pass
 
     def _residual(self, xi, xj):
         """The residual when xi is regressed on xj."""
@@ -310,11 +306,3 @@ class DirectLiNGAM(_BaseLiNGAM):
             Tkernels.append(Tkernel)
 
         return Uc[np.argmin(Tkernels)]
-
-    def _update_residual(self, X, U, K, m):
-        for i in U:
-            if i != m:
-                X[:, i] = self._residual(X[:, i], X[:, m])
-
-        return X
-
