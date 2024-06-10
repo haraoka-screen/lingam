@@ -57,12 +57,10 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
             else:
                 m = self._search_causal_order(X_, U)
 
-            if len(K) == 0:
-                return X_
-
-            sub_cov = cov_X[K][:, K]
-            beta = np.linalg.pinv(sub_cov) @ cov_X[K, m]
-            X_[:, m] = X_[:, m] - X_[:, K] @ beta
+            if len(K) != 0:
+                sub_cov = cov_X[K][:, K]
+                beta = np.linalg.pinv(sub_cov) @ cov_X[K, m]
+                X_[:, m] = X_[:, m] - X_[:, K] @ beta
 
             K.append(m)
             U = U[U != m]
