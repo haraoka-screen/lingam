@@ -103,7 +103,7 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
         self._causal_order = K
 
         if self._disable_estimate_adj_mat:
-            self._adjacency_matrix = np.zero((X.shape[1], X.shape[1]))
+            self._adjacency_matrix = np.zeros((X.shape[1], X.shape[1]))
             return self
         else:
             return self._estimate_adj_mat(X, prior_knowledge=self._Aknw)
