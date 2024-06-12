@@ -4,12 +4,42 @@ The LiNGAM Project: https://sites.google.com/view/sshimizu06/lingam
 """
 
 import numpy as np
-from sklearn.utils import check_array
+from sklearn.utils import check_array, check_scalar
 
 from .direct_lingam import DirectLiNGAM
 
 
 class HighDimDirectLiNGAM(DirectLiNGAM):
+
+
+    def __init__(self, disable_estimate_adj_mat=False, **kwargs):
+        """Construct a DirectLiNGAM model.
+
+        Parameters
+        ----------
+        random_state : int, optional (default=None)
+            ``random_state`` is the seed used by the random number generator.
+        prior_knowledge : array-like, shape (n_features, n_features), optional (default=None)
+            Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
+
+            The elements of prior knowledge matrix are defined as follows [1]_:
+
+            * ``0`` : :math:`x_i` does not have a directed path to :math:`x_j`
+            * ``1`` : :math:`x_i` has a directed path to :math:`x_j`
+            * ``-1`` : No prior knowledge is available to know if either of the two cases above (0 or 1) is true.
+        apply_prior_knowledge_softly : boolean, optional (default=False)
+            If True, apply prior knowledge softly.
+        measure : {'pwling', 'kernel', 'pwling_fast'}, optional (default='pwling')
+            Measure to evaluate independence: 'pwling' [2]_ or 'kernel' [1]_.
+            For fast execution with GPU, 'pwling_fast' can be used (culingam is required).
+        disable_estimate_adj_mat: bool optional (default=False)
+            An adjacency matrix estimation is skipped if it is True; otherwise, it is not.
+        """
+        disable_estimate_adj_mat = check_scalar(disable_estimate_adj_mat, "disable_estimate_adj_mat", bool)
+
+        super().__init__(kwargs)
+
+        self._disable_estimate_adj_mat = disable_estimate_adj_mat
 
     def fit(self, X):
         """Fit the model to X.
@@ -47,7 +77,7 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
         if self._measure == "kernel":
             X_ = scale(X_)
 
-        cov_X = np.cov(X.T)
+        cov_X_ = np.cov(X_.T)
 
         for _ in range(n_features):
             if self._measure == "kernel":
@@ -58,8 +88,8 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
                 m = self._search_causal_order(X_, U)
 
             if len(K) != 0:
-                sub_cov = cov_X[K][:, K]
-                beta = np.linalg.pinv(sub_cov) @ cov_X[K, m]
+                sub_cov = cov_X_[K][:, K]
+                beta = np.linalg.pinv(sub_cov) @ cov_X_[K, m]
                 X_[:, m] = X_[:, m] - X_[:, K] @ beta
 
             K.append(m)
@@ -71,5 +101,10 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
                 ]
 
         self._causal_order = K
-        return self._estimate_adjacency_matrix(X, prior_knowledge=self._Aknw)
+
+        if self._disable_estimate_adj_mat:
+            self._adjacency_matrix = np.zero((X.shape[1], X.shape[1]))
+            return self
+        else:
+            return self._estimate_adj_mat(X, prior_knowledge=self._Aknw)
 
