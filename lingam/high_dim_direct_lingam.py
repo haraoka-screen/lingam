@@ -4,42 +4,16 @@ The LiNGAM Project: https://sites.google.com/view/sshimizu06/lingam
 """
 
 import numpy as np
-from sklearn.utils import check_array, check_scalar
+from sklearn.preprocessing import scale
+from sklearn.linear_model import LassoLarsCV, LinearRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.utils import check_array
 
 from .direct_lingam import DirectLiNGAM
 
 
 class HighDimDirectLiNGAM(DirectLiNGAM):
 
-
-    def __init__(self, disable_estimate_adj_mat=False, **kwargs):
-        """Construct a DirectLiNGAM model.
-
-        Parameters
-        ----------
-        random_state : int, optional (default=None)
-            ``random_state`` is the seed used by the random number generator.
-        prior_knowledge : array-like, shape (n_features, n_features), optional (default=None)
-            Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
-
-            The elements of prior knowledge matrix are defined as follows [1]_:
-
-            * ``0`` : :math:`x_i` does not have a directed path to :math:`x_j`
-            * ``1`` : :math:`x_i` has a directed path to :math:`x_j`
-            * ``-1`` : No prior knowledge is available to know if either of the two cases above (0 or 1) is true.
-        apply_prior_knowledge_softly : boolean, optional (default=False)
-            If True, apply prior knowledge softly.
-        measure : {'pwling', 'kernel', 'pwling_fast'}, optional (default='pwling')
-            Measure to evaluate independence: 'pwling' [2]_ or 'kernel' [1]_.
-            For fast execution with GPU, 'pwling_fast' can be used (culingam is required).
-        disable_estimate_adj_mat: bool optional (default=False)
-            An adjacency matrix estimation is skipped if it is True; otherwise, it is not.
-        """
-        disable_estimate_adj_mat = check_scalar(disable_estimate_adj_mat, "disable_estimate_adj_mat", bool)
-
-        super().__init__(kwargs)
-
-        self._disable_estimate_adj_mat = disable_estimate_adj_mat
 
     def fit(self, X):
         """Fit the model to X.
@@ -101,10 +75,82 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
                 ]
 
         self._causal_order = K
+        return self._estimate_adjacency_matrix(X, prior_knowledge=self._Aknw)
 
-        if self._disable_estimate_adj_mat:
-            self._adjacency_matrix = np.zeros((X.shape[1], X.shape[1]))
-            return self
-        else:
-            return self._estimate_adj_mat(X, prior_knowledge=self._Aknw)
+    def _estimate_adjacency_matrix(self, X, prior_knowledge=None):
+        """Estimate adjacency matrix by causal order.
 
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Training data, where n_samples is the number of samples
+            and n_features is the number of features.
+        prior_knowledge : array-like, shape (n_variables, n_variables), optional (default=None)
+            Prior knowledge matrix.
+
+        Returns
+        -------
+        self : object
+            Returns the instance itself.
+        """
+        if prior_knowledge is not None:
+            pk = prior_knowledge.copy()
+            np.fill_diagonal(pk, 0)
+
+        B = np.zeros([X.shape[1], X.shape[1]], dtype="float64")
+        for i in range(1, len(self._causal_order)):
+            target = self._causal_order[i]
+            predictors = self._causal_order[:i]
+
+            # Exclude variables specified in no_path with prior knowledge
+            if prior_knowledge is not None:
+                predictors = [p for p in predictors if pk[target, p] != 0]
+
+            # target is exogenous variables if predictors are empty
+            if len(predictors) == 0:
+                continue
+
+            B[target, predictors] = _predict_adaptive_lasso(X, predictors, target)
+
+        self._adjacency_matrix = B
+        return self
+
+def _predict_adaptive_lasso(X, predictors, target, gamma=1.0):
+    """Predict with Adaptive Lasso.
+
+    Parameters
+    ----------
+    X : array-like, shape (n_samples, n_features)
+        Training data, where n_samples is the number of samples
+        and n_features is the number of features.
+    predictors : array-like, shape (n_predictors)
+        Indices of predictor variable.
+    target : int
+        Index of target variable.
+
+    Returns
+    -------
+    coef : array-like, shape (n_features)
+        Coefficients of predictor variable.
+    """
+    # Standardize X
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+
+    # Pruning with Adaptive Lasso
+    lr = LinearRegression()
+    lr.fit(X_std[:, predictors], X_std[:, target])
+    weight = np.power(np.abs(lr.coef_), gamma)
+    reg = LassoLarsCV()
+    reg.fit(X_std[:, predictors] * weight, X_std[:, target])
+    pruned_idx = np.abs(reg.coef_ * weight) > 0.0
+
+    # Calculate coefficients of the original scale
+    coef = np.zeros(reg.coef_.shape)
+    if pruned_idx.sum() > 0:
+        lr = LinearRegression()
+        pred = np.array(predictors)
+        lr.fit(X[:, pred[pruned_idx]], X[:, target])
+        coef[pruned_idx] = lr.coef_
+
+    return coef
