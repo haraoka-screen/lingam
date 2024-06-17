@@ -61,18 +61,18 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
             else:
                 m = self._search_causal_order(X_, U)
 
-            #if len(K) != 0:
-            #    sub_cov = cov_X_[K][:, K]
-            #    beta = np.linalg.pinv(sub_cov) @ cov_X_[K, m]
-            #    X_[:, m] = X_[:, m] - X_[:, K] @ beta
+            if len(K) != 0:
+                sub_cov = cov_X_[K][:, K]
+                beta = np.linalg.pinv(sub_cov) @ cov_X_[K, m]
+                X_[:, m] = X_[:, m] - X_[:, K] @ beta
 
             K.append(m)
             U = U[U != m]
 
-            for i in U:
-                sub_cov = cov_X_[K][:, K]
-                beta = np.linalg.pinv(sub_cov) @ cov_X_[K, i]
-                X_[:, i] = X_[:, i] - X_[:, K] @ beta
+            #for i in U:
+            #    sub_cov = cov_X_[K][:, K]
+            #    beta = np.linalg.pinv(sub_cov) @ cov_X_[K, i]
+            #    X_[:, i] = X_[:, i] - X_[:, K] @ beta
 
             # Update partial orders
             if (self._Aknw is not None) and (not self._apply_prior_knowledge_softly):
