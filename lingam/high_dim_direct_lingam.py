@@ -75,7 +75,53 @@ class HighDimDirectLiNGAM(DirectLiNGAM):
                 ]
 
         self._causal_order = K
-        return self._estimate_adjacency_matrix(X, prior_knowledge=self._Aknw)
+        #return self._estimate_adjacency_matrix(X, prior_knowledge=self._Aknw)
+        self._adjacency_matrix = np.zeros((len(X.T), len(X.T)))
+        return self
+
+    def _entropy(self, u):
+        """Calculate entropy using the maximum entropy approximations."""
+        k1 = 79.047
+        k2 = 7.4129
+        gamma = 0.37457
+        return (1 + np.log(2 * np.pi)) / 2 - k1 * (np.mean(np.log(np.cosh(u)), axis=1) - gamma) ** 2 - k2 * (np.mean(u * np.exp((-(u ** 2)) / 2), axis=1)) ** 2
+
+    def _diff_mutual_info(self, xi_std, xj_std, ri_j, rj_i):
+        """Calculate the difference of the mutual informations."""
+        entropies = self._entropy(np.array([xj_std, ri_j / np.std(ri_j), xi_std, rj_i / np.std(rj_i)]))
+        return (entropies[0] + entropies[1]) - (entropies[2] + entropies[3])
+
+    def _residual_std(self, xi, xj):
+        """The residual when xi is regressed on xj."""
+        #return xi - (np.cov(xi, xj)[0, 1] / np.var(xj)) * xj
+        return xi - np.cov(xi, xj)[0, 1] * xj
+
+    def _search_causal_order(self, X, U):
+        """Search the causal ordering."""
+        Uc, Vj = self._search_candidate(U)
+        if len(Uc) == 1:
+            return Uc[0]
+
+        # standardize
+        X = (X - np.mean(X, axis=0)) / np.std(X, axis=0)
+
+        # residuals 残差の列
+        res = X[:, :, None] - np.cov(X.T) * X[:, None, :]
+
+        M_list = []
+        for i in Uc:
+            M = 0
+
+            for j in U:
+                if i == j:
+                    continue
+
+                ri_j = X[:, i] if i in Vj and j in Uc else res[:, i, j]
+                rj_i = X[:, j] if j in Vj and i in Uc else res[:, j, i]
+
+                M += np.min([0, self._diff_mutual_info(X[:, i], X[:, j], ri_j, rj_i)]) ** 2
+            M_list.append(-1.0 * M)
+        return Uc[np.argmax(M_list)]
 
     def _estimate_adjacency_matrix(self, X, prior_knowledge=None):
         """Estimate adjacency matrix by causal order.
