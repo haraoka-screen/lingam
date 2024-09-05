@@ -23,6 +23,7 @@ def bootstrap_with_imputation(
     n_sampling,
     n_repeats,
     cd_model=None,
+    imp=None,
     prior_knowledge=None,
     apply_prior_knowledge_softly=False,
     random_state=None
@@ -48,6 +49,9 @@ def bootstrap_with_imputation(
     cd_model : object, optional (default=None)
         Instance of a class inheriting from BaseMultiGroupCDModel class.
         If None, use MultiGroupDirectLiNGAM to estimate causal order.
+    imp : object, optional (default=None)
+        Instane of a class inheriting from BaseMultipleImputation class.
+        If None, use _DefaultMultipleImputation to impute datasets.
     prior_knowledge : array-like, shape (n_features, n_features), optional (default=None)
         Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
         prior_knowledge is used only if cd_model is None.
@@ -96,6 +100,9 @@ def bootstrap_with_imputation(
     if cd_model is not None and not isinstance(cd_model, BaseMultiGroupCDModel):
         raise ValueError("cd_model must be an instance of a subclass of BaseMultiGroupCDModel.")
 
+    if imp is not None and not isinstance(imp, BaseMultipleImputation):
+        raise ValueError("imp must be an instance of a subclass of BaseMultipleImputation.")
+
     n_samples, n_features = X.shape
     if prior_knowledge is not None:
         prior_knowledge = check_array(prior_knowledge)
@@ -104,7 +111,8 @@ def bootstrap_with_imputation(
 
     random_state = check_random_state(random_state)
 
-    imp = IterativeImputer(sample_posterior=True, random_state=random_state)
+    if imp is None:
+        imp = _DefaultMultipleImputation(n_repeats, random_state)
 
     if cd_model is None:
         cd_model = _DefaultMultiGroupCDModel(
@@ -127,10 +135,7 @@ def bootstrap_with_imputation(
         cd_model.before_imputation(bootstrap_sample)
 
         # make datasets
-        datasets = []
-        for i in range(n_repeats):
-            dataset = imp.fit_transform(bootstrap_sample)
-            datasets.append(dataset)
+        datasets = imp.fit(bootstrap_sample)
 
         # run causal discovery assuming a common causal structure
         causal_order, adjacency_matrices = cd_model.fit(datasets)
@@ -201,6 +206,13 @@ class BaseMultiGroupCDModel(metaclass=ABCMeta):
         raise NotImplementedError
 
 
+class BaseMultipleImputation(metaclass=ABCMeta):
+
+    @abstractmethod
+    def fit(self, X):
+        raise NotImplementedError
+
+
 class _DefaultMultiGroupCDModel(BaseMultiGroupCDModel):
     """ The default class for causal discovery on multigroup data """
 
@@ -217,3 +229,18 @@ class _DefaultMultiGroupCDModel(BaseMultiGroupCDModel):
     def fit(self, X_list):
         self._model.fit(X_list)
         return self._model.causal_order_, self._model.adjacency_matrices_
+
+
+class _DefaultMultipleImputation(metaclass=ABCMeta):
+
+    def __init__(self, n_repeats, random_state):
+        self._imp = IterativeImputer(sample_posterior=True, random_state=random_state)
+        self._n_repeats = n_repeats
+
+    def fit(self, X):
+        datasets = []
+        for i in range(self._n_repeats):
+            dataset = self._imp.fit_transform(X)
+            datasets.append(dataset)
+
+        return datasets
