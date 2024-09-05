@@ -21,7 +21,7 @@ __all__ = [
 def bootstrap_with_imputation(
     X,
     n_sampling,
-    n_repeats,
+    n_repeats=10,
     cd_model=None,
     imp=None,
     prior_knowledge=None,
@@ -44,7 +44,7 @@ def bootstrap_with_imputation(
         and ``n_features`` is the number of features.
     n_sampling : int
         Number of bootstraps.
-    n_repeats : int
+    n_repeats : int, optional (default=10)
         Number of times to complete missing values for each bootstrap sample.
     cd_model : object, optional (default=None)
         Instance of a class inheriting from BaseMultiGroupCDModel class.
@@ -136,9 +136,13 @@ def bootstrap_with_imputation(
 
         # make datasets
         datasets = imp.fit(bootstrap_sample)
+        datasets = _check_imputer_outout(datasets, n_samples, n_features)
+
+        n_imputations = len(datasets)
 
         # run causal discovery assuming a common causal structure
-        causal_order, adjacency_matrices = cd_model.fit(datasets)
+        result = cd_model.fit(datasets)
+        causal_order, adjacency_matrices = _check_cd_output(result, n_imputations, n_features)
 
         # store imputation results
         # hold values only if NaN
@@ -158,6 +162,25 @@ def bootstrap_with_imputation(
     imputation_results = np.array(imputation_results)
 
     return causal_orders, adj_matrices_list, resampled_indices, imputation_results
+
+
+class BaseMultipleImputation(metaclass=ABCMeta):
+
+    @abstractmethod
+    def fit(self, X):
+        raise NotImplementedError
+
+
+def _check_imputer_outout(imp_output, n_samples, n_features):
+    imputed_data = check_array(imp_output, allow_nd=True)
+    
+    # XXX: shape[0] はn_imputatationsだがそれはユーザにしか分からない。
+    if imputed_data.shape[1:] != (n_samples, n_features):
+        raise ValueError("")
+
+    imputed_data = list(imputed_data)
+
+    return imputed_data
 
 
 class BaseMultiGroupCDModel(metaclass=ABCMeta):
@@ -206,11 +229,36 @@ class BaseMultiGroupCDModel(metaclass=ABCMeta):
         raise NotImplementedError
 
 
-class BaseMultipleImputation(metaclass=ABCMeta):
+def _check_cd_output(cd_output, n_imputations, n_features):
+    if not isinstance(cd_output, tuple) or len(cd_output) != 2:
+        raise ValueError("The return value of cd_model.fit() must be a tuple like (causal_order, adjacenecy_matrices).")
 
-    @abstractmethod
+    causal_order, adjacency_matrices = cd_output
+
+    causal_order = check_array(causal_order, ensure_2d=False)
+    if len(causal_order) != n_features:
+        raise ValueError("")
+
+    adjacency_matrices = check_array(adjacency_matrices, allow_nd=True)
+    if adjacency_matrices.shape != (n_imputations, n_features, n_features):
+        raise ValueError("")
+
+    return causal_order, adjacency_matrices
+
+
+class _DefaultMultipleImputation(metaclass=ABCMeta):
+
+    def __init__(self, n_repeats, random_state):
+        self._imp = IterativeImputer(sample_posterior=True, random_state=random_state)
+        self._n_repeats = n_repeats
+
     def fit(self, X):
-        raise NotImplementedError
+        datasets = []
+        for i in range(self._n_repeats):
+            dataset = self._imp.fit_transform(X)
+            datasets.append(dataset)
+
+        return datasets
 
 
 class _DefaultMultiGroupCDModel(BaseMultiGroupCDModel):
@@ -229,18 +277,3 @@ class _DefaultMultiGroupCDModel(BaseMultiGroupCDModel):
     def fit(self, X_list):
         self._model.fit(X_list)
         return self._model.causal_order_, self._model.adjacency_matrices_
-
-
-class _DefaultMultipleImputation(metaclass=ABCMeta):
-
-    def __init__(self, n_repeats, random_state):
-        self._imp = IterativeImputer(sample_posterior=True, random_state=random_state)
-        self._n_repeats = n_repeats
-
-    def fit(self, X):
-        datasets = []
-        for i in range(self._n_repeats):
-            dataset = self._imp.fit_transform(X)
-            datasets.append(dataset)
-
-        return datasets
