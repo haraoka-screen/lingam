@@ -22,8 +22,8 @@ def bootstrap_with_imputation(
     X,
     n_sampling,
     n_repeats=10,
-    cd_model=None,
     imp=None,
+    cd_model=None,
     prior_knowledge=None,
     apply_prior_knowledge_softly=False,
     random_state=None
@@ -46,12 +46,13 @@ def bootstrap_with_imputation(
         Number of bootstraps.
     n_repeats : int, optional (default=10)
         Number of times to complete missing values for each bootstrap sample.
-    cd_model : object, optional (default=None)
-        Instance of a class inheriting from BaseMultiGroupCDModel class.
-        If None, use MultiGroupDirectLiNGAM to estimate causal order.
+        This value are only used when imp is None.
     imp : object, optional (default=None)
         Instane of a class inheriting from BaseMultipleImputation class.
         If None, use _DefaultMultipleImputation to impute datasets.
+    cd_model : object, optional (default=None)
+        Instance of a class inheriting from BaseMultiGroupCDModel class.
+        If None, use MultiGroupDirectLiNGAM to estimate causal order.
     prior_knowledge : array-like, shape (n_features, n_features), optional (default=None)
         Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
         prior_knowledge is used only if cd_model is None.
@@ -138,11 +139,11 @@ def bootstrap_with_imputation(
         datasets = imp.fit(bootstrap_sample)
         datasets = _check_imputer_outout(datasets, n_samples, n_features)
 
-        n_imputations = len(datasets)
+        n_repeats_impl = len(datasets)
 
         # run causal discovery assuming a common causal structure
         result = cd_model.fit(datasets)
-        causal_order, adjacency_matrices = _check_cd_output(result, n_imputations, n_features)
+        causal_order, adjacency_matrices = _check_cd_output(result, n_repeats_impl, n_features)
 
         # store imputation results
         # hold values only if NaN
@@ -172,11 +173,13 @@ class BaseMultipleImputation(metaclass=ABCMeta):
 
 
 def _check_imputer_outout(imp_output, n_samples, n_features):
-    imputed_data = check_array(imp_output, allow_nd=True)
+    try:
+        imputed_data = check_array(imp_output, allow_nd=True)
+    except Exception as e:
+        raise ValueError("The return value of imp violates its specification: " + str(e))
     
-    # XXX: shape[0] はn_imputatationsだがそれはユーザにしか分からない。
     if imputed_data.shape[1:] != (n_samples, n_features):
-        raise ValueError("")
+        raise ValueError("The shape of the return value of imp must be (n_repeats, n_samples, n_fatures).")
 
     imputed_data = list(imputed_data)
 
@@ -229,19 +232,30 @@ class BaseMultiGroupCDModel(metaclass=ABCMeta):
         raise NotImplementedError
 
 
-def _check_cd_output(cd_output, n_imputations, n_features):
+def _check_cd_output(cd_output, n_repeats, n_features):
     if not isinstance(cd_output, tuple) or len(cd_output) != 2:
         raise ValueError("The return value of cd_model.fit() must be a tuple like (causal_order, adjacenecy_matrices).")
 
     causal_order, adjacency_matrices = cd_output
 
-    causal_order = check_array(causal_order, ensure_2d=False)
-    if len(causal_order) != n_features:
-        raise ValueError("")
+    try:
+        causal_order = check_array(causal_order, ensure_2d=False)
+    except Exception as e:
+        raise ValueError("causal_order, the output of cd_model, violates its specification: " + str(e))
 
-    adjacency_matrices = check_array(adjacency_matrices, allow_nd=True)
-    if adjacency_matrices.shape != (n_imputations, n_features, n_features):
-        raise ValueError("")
+    if len(causal_order) != n_features:
+        raise ValueError("The length of causal_order, the output of cd_model, must be equal to n_features.")
+
+    if not np.array_equal(np.unique(causal_order), np.arange(len(causal_order))):
+        raise ValueError("Elements of causal_order, the output of cd_model, must be unique and must be indicates a column number.")
+
+    try:
+        adjacency_matrices = check_array(adjacency_matrices, allow_nd=True)
+    except Exception as e:
+        raise ValueError("adjacency_matrices, the output of cd_model, violates its specification: " + str(e))
+
+    if adjacency_matrices.shape != (n_repeats, n_features, n_features):
+        raise ValueError("The shape of adjacency_matrices, the output of cd_model, must be (n_repeats, n_features, n_features)")
 
     return causal_order, adjacency_matrices
 
