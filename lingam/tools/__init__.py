@@ -14,6 +14,7 @@ from ..multi_group_direct_lingam import MultiGroupDirectLiNGAM
 
 __all__ = [
     "bootstrap_with_imputation",
+    "BaseMultipleImputation",
     "BaseMultiGroupCDModel",
 ]
 
@@ -254,8 +255,8 @@ def _check_cd_output(cd_output, n_repeats, n_features):
     except Exception as e:
         raise ValueError("adjacency_matrices, the output of cd_model, violates its specification: " + str(e))
 
-    if adjacency_matrices.shape != (n_repeats, n_features, n_features):
-        raise ValueError("The shape of adjacency_matrices, the output of cd_model, must be (n_repeats, n_features, n_features)")
+    if adjacency_matrices.shape[-2:] != (n_features, n_features):
+        raise ValueError("The shape of elements of adjacency_matrices, the output of cd_model, must be (n_features, n_features)")
 
     return causal_order, adjacency_matrices
 

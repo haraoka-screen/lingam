@@ -178,6 +178,25 @@ def test_bootstrap_with_imputation_cd_model():
     assert resampled_indices.shape == (n_sampling, n_samples)
     assert imputation_results.shape == (n_sampling, n_repeats, *X_mcar.shape)
 
+    # valid: cd_model estimates one adj_matrix based on X_list
+    class ValidCDModel(BaseMultiGroupCDModel):
+        def before_imputation(self, X):
+            pass
+        def fit(self, X_list):
+            co = [0, 1, 2]
+            ams = m.copy()
+            return co, ams
+
+    n_sampling = 2
+    cd_model = ValidCDModel()
+    result = bootstrap_with_imputation(X_mcar, n_sampling, n_repeats=n_repeats, cd_model=cd_model)
+
+    causal_order, adj_matrices_list, resampled_indices, imputation_results = result
+    assert causal_order.shape == (n_sampling, len(m))
+    assert adj_matrices_list.shape == (n_sampling, *m.shape)
+    assert resampled_indices.shape == (n_sampling, n_samples)
+    assert imputation_results.shape == (n_sampling, n_repeats, *X_mcar.shape)
+
     # invalid: not inherited
     class InvalidCDModel:
         def before_imputation(self, X):
