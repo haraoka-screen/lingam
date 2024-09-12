@@ -198,7 +198,7 @@ def _check_imputer_outout(imp_output, n_samples, n_features):
         imputed_data = check_array(imp_output, allow_nd=True)
     except Exception as e:
         raise ValueError("The return value of imp violates its specification: " + str(e))
-    
+
     if imputed_data.shape[1:] != (n_samples, n_features):
         raise ValueError("The shape of the return value of imp must be (n_repeats, n_samples, n_fatures).")
 
@@ -272,7 +272,9 @@ def _check_cd_output(cd_output, n_repeats, n_features):
         raise ValueError("The length of causal_order, the output of cd_model, must be equal to n_features.")
 
     if not np.array_equal(np.unique(causal_order), np.arange(len(causal_order))):
-        raise ValueError("Elements of causal_order, the output of cd_model, must be unique and must be indicates a column number.")
+        raise ValueError(
+            "Elements of causal_order, the output of cd_model, must be unique and must be indicates a column number."
+        )
 
     try:
         adjacency_matrices = check_array(adjacency_matrices, allow_nd=True)
@@ -280,7 +282,9 @@ def _check_cd_output(cd_output, n_repeats, n_features):
         raise ValueError("adjacency_matrices, the output of cd_model, violates its specification: " + str(e))
 
     if adjacency_matrices.shape[-2:] != (n_features, n_features):
-        raise ValueError("The shape of elements of adjacency_matrices, the output of cd_model, must be (n_features, n_features)")
+        raise ValueError(
+            "The shape of elements of adjacency_matrices, the output of cd_model, must be (n_features, n_features)"
+        )
 
     return causal_order, adjacency_matrices
 
