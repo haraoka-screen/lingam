@@ -71,7 +71,7 @@ def test_bootstrap_with_imputation_imp():
 
     # valid
     class ValidImputer(BaseMultipleImputation):
-        def fit(self, X):
+        def fit_transform(self, X):
             imputeds = np.array([X_org for _ in range(n_repeats)])
             return imputeds
 
@@ -86,7 +86,7 @@ def test_bootstrap_with_imputation_imp():
 
     # invalid: not inherited
     class InvalidImputer:
-        def fit(self, X):
+        def fit_transform(self, X):
             imputeds = np.array([X_org for _ in range(n_repeats)])
             return imputeds
 
@@ -100,7 +100,7 @@ def test_bootstrap_with_imputation_imp():
 
     # invalid: exists nan 
     class InvalidImputer(BaseMultipleImputation):
-        def fit(self, X):
+        def fit_transform(self, X):
             imputeds = np.array([X_mcar for _ in range(n_repeats)])
             return imputeds
 
@@ -114,7 +114,7 @@ def test_bootstrap_with_imputation_imp():
 
     # invalid: wrong shape
     class InvalidImputer(BaseMultipleImputation):
-        def fit(self, X):
+        def fit_transform(self, X):
             imputeds = np.array([X_org for _ in range(n_repeats)])
             imputeds = imputeds[:, :-1, :]
             return imputeds
@@ -129,7 +129,7 @@ def test_bootstrap_with_imputation_imp():
 
     # invalid: wrong data type
     class InvalidImputer(BaseMultipleImputation):
-        def fit(self, X):
+        def fit_transform(self, X):
             imputeds = np.array([X_org for _ in range(n_repeats)])
             return imputeds.astype(str)
 

@@ -29,7 +29,7 @@ def bootstrap_with_imputation(
     apply_prior_knowledge_softly=False,
     random_state=None
 ):
-    """Discovering causal relations in data which has NaNs.
+    """Discovering causal relations in data with missing values..
 
     `bootstrap_with_imputation` is a function to perform a causal discovery
     on a dataset with missing values. `bootstrap_with_imputation` creates
@@ -44,18 +44,18 @@ def bootstrap_with_imputation(
         Training data, where ``n_samples`` is the number of samples
         and ``n_features`` is the number of features.
     n_sampling : int
-        Number of bootstraps.
+        The number of bootstraps.
     n_repeats : int, optional (default=10)
-        Number of times to complete missing values for each bootstrap sample.
-        This value are only used when imp is None.
+        The number of times to complete missing values for each bootstrap sample.
+        This value is only used when imp is None.
     imp : object, optional (default=None)
-        Instane of a class inheriting from BaseMultipleImputation class.
-        If None, use _DefaultMultipleImputation to impute datasets.
+        Instance of a class inheriting from ``BaseMultipleImputation`` class.
+        If None, this function uses ``_DefaultMultipleImputation`` to impute datasets.
     cd_model : object, optional (default=None)
-        Instance of a class inheriting from BaseMultiGroupCDModel class.
-        If None, use MultiGroupDirectLiNGAM to estimate causal order.
+        Instance of a class inheriting from ``BaseMultiGroupCDModel`` class.
+        If None, this function usea ``MultiGroupDirectLiNGAM`` to estimate the causal order.
     prior_knowledge : array-like, shape (n_features, n_features), optional (default=None)
-        Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
+        Prior knowledge used for the causal discovery, where ``n_features`` is the number of features.
         prior_knowledge is used only if cd_model is None.
 
         The elements of prior knowledge matrix are defined as follows:
@@ -65,21 +65,21 @@ def bootstrap_with_imputation(
         * ``-1`` : No prior knowledge is available to know if either of the two cases above (0 or 1) is true.
     apply_prior_knowledge_softly : boolean, optional (default=False)
         If True, apply prior knowledge softly.
-        apply_prior_knowledge_softly is used only if cd_model is None.
+        ``apply_prior_knowledge_softly`` is used only if ``cd_model`` is None.
     random_state : int, optional (default=None)
         ``random_state`` is the seed used by the random number generator.
 
     Returns
     -------
     causal_orders : array-like, shape (n_sampling, n_features)
-        The causal order of fitted model, where
+        The causal order of the fitted model, where
         n_features is the number of features.
     adj_matrices_list : array-like, shape (n_sampling, n_repeats, n_features, n_features)
         The list of adjacency matrices.
     resampled_indices_ : array-like, shape (n_sampling, n_samples)
         The list of original index of resampled samples.
     imputation_results : array-like, shape (n_sampling, n_repeats, n_samples, n_features)
-        This array shows a result of the imputation.
+        This array shows the result of the imputation.
         Elements which are not NaN are the imputation values.
     """
     # check args
@@ -137,7 +137,7 @@ def bootstrap_with_imputation(
         cd_model.before_imputation(bootstrap_sample)
 
         # make datasets
-        datasets = imp.fit(bootstrap_sample)
+        datasets = imp.fit_transform(bootstrap_sample)
         datasets = _check_imputer_outout(datasets, n_samples, n_features)
 
         n_repeats_impl = len(datasets)
@@ -167,9 +167,29 @@ def bootstrap_with_imputation(
 
 
 class BaseMultipleImputation(metaclass=ABCMeta):
+    """ The abstract class of the causal discovery model for the multigroup data
+
+    Inherit this abstract class and send that instance to ``bootstrap_with_imputation``
+    if you need to customize the causal discovery model in ``bootstrap_with_imputation``.
+    """
 
     @abstractmethod
-    def fit(self, X):
+    def fit_transform(self, X):
+        """
+        This method is called to fit imputed bootstrap sample.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Target data, where ``n_samples`` is the number of samples
+            and ``n_features`` is the number of features.
+            ``X`` may contain missing values.
+
+        Returns
+        -------
+        X_list: list, shape [X, ...]
+            The list of imputed X.
+        """
         raise NotImplementedError
 
 
@@ -188,7 +208,7 @@ def _check_imputer_outout(imp_output, n_samples, n_features):
 
 
 class BaseMultiGroupCDModel(metaclass=ABCMeta):
-    """ The abstract class of the causal discovery model for multigroup data
+    """ The abstract class of the causal discovery model for the multigroup data
 
     Inherit this abstract class and send that instance to ``bootstrap_with_imputation``
     if you need to customize the causal discovery model in ``bootstrap_with_imputation``.
@@ -205,6 +225,7 @@ class BaseMultiGroupCDModel(metaclass=ABCMeta):
             ``X`` is a bootstrap sample and has not yet been imputed.
             ``n_samples`` is the number of samples
             and ``n_features`` is the number of features.
+            ``X`` may contain missing values.
 
         Returns
         -------
@@ -220,15 +241,18 @@ class BaseMultiGroupCDModel(metaclass=ABCMeta):
         Parameters
         ----------
         X_list : list, shape [X, ...]
-            ``X_list`` is a list of imputed bootstrap samples.
+            ``X_list`` is a list of the imputed bootstrap samples.
             Multiple datasets for training, where ``X`` is an dataset.
             The shape of ''X'' is (n_samples, n_features),
             where ``n_samples`` is the number of samples and ``n_features`` is the number of features.
+            Each ``X`` may contain missing values.
 
         Returns
         -------
         causal_order : array-like
+            The estimated causal order.
         adjacenyc_matrices : array-like
+            The estimated adjacency matrices.
         """
         raise NotImplementedError
 
@@ -262,22 +286,23 @@ def _check_cd_output(cd_output, n_repeats, n_features):
 
 
 class _DefaultMultipleImputation(metaclass=ABCMeta):
+    """ The default class for the multiple imputation """
 
     def __init__(self, n_repeats, random_state):
         self._imp = IterativeImputer(sample_posterior=True, random_state=random_state)
         self._n_repeats = n_repeats
 
-    def fit(self, X):
-        datasets = []
+    def fit_transform(self, X):
+        X_list = []
         for i in range(self._n_repeats):
-            dataset = self._imp.fit_transform(X)
-            datasets.append(dataset)
+            X_ = self._imp.fit_transform(X)
+            X_list.append(X_)
 
-        return datasets
+        return X_list
 
 
 class _DefaultMultiGroupCDModel(BaseMultiGroupCDModel):
-    """ The default class for causal discovery on multigroup data """
+    """ The default class for the causal discovery on the multigroup data """
 
     def __init__(self, prior_knowledge=None, apply_prior_knowledge_softly=False, random_state=None):
         self._model = MultiGroupDirectLiNGAM(
