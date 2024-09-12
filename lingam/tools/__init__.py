@@ -53,7 +53,7 @@ def bootstrap_with_imputation(
         If None, this function uses ``_DefaultMultipleImputation`` to impute datasets.
     cd_model : object, optional (default=None)
         Instance of a class inheriting from ``BaseMultiGroupCDModel`` class.
-        If None, this function usea ``MultiGroupDirectLiNGAM`` to estimate the causal order.
+        If None, this function uses ``MultiGroupDirectLiNGAM`` to estimate the causal order.
     prior_knowledge : array-like, shape (n_features, n_features), optional (default=None)
         Prior knowledge used for the causal discovery, where ``n_features`` is the number of features.
         prior_knowledge is used only if cd_model is None.
