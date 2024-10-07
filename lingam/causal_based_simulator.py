@@ -111,6 +111,9 @@ class CBSILiNGAM(CBSImpl):
         return parent_names
 
     def get_data(self, var_names):
+        if isinstance(var_names, str):
+            var_names = [var_names]
+
         var_indices = []
         for var_name in var_names:
             index = self._endog_names.index(var_name)
@@ -138,11 +141,14 @@ class CBSILiNGAM(CBSImpl):
         return causal_order
 
     def _check_causal_graph(self, causal_graph, X):
-        causal_graph = check_array(causal_graph)
+        try:
+            causal_graph = check_array(causal_graph)
 
-        n_features = X.shape[1]
-        if causal_graph.shape != (n_features, n_features):
-            raise RuntimeError("The shape of causal_graph must be (n_features, n_features)")
+            n_features = X.shape[1]
+            if causal_graph.shape != (n_features, n_features):
+                raise ValueError("The shape of causal_graph must be (n_features, n_features)")
+        except Exception as e:
+            raise ValueError("causal_graph has an error: " + str(e))
 
         return causal_graph
 
@@ -440,7 +446,7 @@ class CausalBasedSimulator:
             if not isinstance(target_name, str):
                 raise TypeError("Key of changing_models must be str.")
             if target_name not in endog_names:
-                raise RuntimeError(f"Unknown name. ({name})")
+                raise RuntimeError(f"Unknown name. ({target_name})")
 
             # parent_names key
             if "parent_names" not in model_info.keys():
@@ -497,7 +503,7 @@ class CausalBasedSimulator:
             return CBSILiNGAM
         elif cd_algo_name == ICALiNGAM.__name__:
             return CBSILiNGAM
-        elif cd_algo_name == BottomUpParseLiNGAM.__name__:
+        elif cd_algo_name == BottomUpParceLiNGAM.__name__:
             return CBSIUnobsCommonCauseLiNGAM
         #elif cd_algo_name == VARLiNGAM.__name__:
         #    return CBSITimeSeriesLiNGAM
