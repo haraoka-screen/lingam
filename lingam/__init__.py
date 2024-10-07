@@ -6,7 +6,8 @@ The LiNGAM Project: https://sites.google.com/view/sshimizu06/lingam
 from .bootstrap import BootstrapResult
 from .bottom_up_parce_lingam import BottomUpParceLiNGAM
 from .camuv import CAMUV
-from .causal_based_simulator import CausalBasedSimulator, CBSImpl, CBSIDirectLiNGAM
+# XXX: CBSI*は後で削除
+from .causal_based_simulator import CausalBasedSimulator, CBSImpl, CBSILiNGAM, CBSIUnobsCommonCauseLiNGAM
 from .causal_effect import CausalEffect
 from .direct_lingam import DirectLiNGAM
 from .ica_lingam import ICALiNGAM
@@ -40,8 +41,11 @@ __all__ = [
     "RESIT",
     "LiM",
     "CausalBasedSimulator",
+    # XXX: 後で削除
     "CBSImpl",
-    "CBSIDirectLiNGAM",
+    "CBSILiNGAM",
+    "CBSIUnobsCommonCauseLiNGAM",
+
     "MultiGroupRCD",
     "LiNA",
     "MDLiNA",
