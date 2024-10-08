@@ -61,15 +61,7 @@ class CBSILiNGAM(CBSImpl):
 
         causal_graph = self._check_causal_graph(causal_graph, X_)
 
-        if isinstance(X, pd.DataFrame):
-            endog_names = X.columns.tolist()
-        else:
-            endog_names = [f"{i:d}" for i in range(n_features)]
-
-        if is_discrete is None:
-            is_discrete = [False for _ in range(n_features)]
-
-        discrete_endog_names = np.array(endog_names)[is_discrete].tolist()
+        endog_names, discrete_endog_names = self._make_var_names(causal_graph, X, is_discrete)
 
         causal_order = self._calc_causal_order(causal_graph)
         causal_order = [endog_names[n] for n in causal_order]
@@ -152,6 +144,21 @@ class CBSILiNGAM(CBSImpl):
 
         return causal_graph
 
+    def _make_var_names(self, causal_graph, X, is_discrete):
+        n_features = len(causal_graph)
+
+        if isinstance(X, pd.DataFrame):
+            endog_names = X.columns.tolist()
+        else:
+            endog_names = [f"{i:d}" for i in range(n_features)]
+
+        if is_discrete is None:
+            is_discrete = [False for _ in range(n_features)]
+
+        discrete_endog_names = np.array(endog_names)[is_discrete].tolist()
+
+        return endog_names, discrete_endog_names
+
     def _calc_causal_order(self, causal_graph):
         """Obtain a causal order from the given causal_graph strictly.
 
@@ -194,23 +201,86 @@ class CBSILiNGAM(CBSImpl):
 class CBSIUnobsCommonCauseLiNGAM(CBSILiNGAM):
 
     def _check_causal_graph(self, causal_graph, X):
-        causal_graph = check_array(causal_graph, force_all_finite="allow-nan")
+        try:
+            causal_graph = check_array(causal_graph, force_all_finite="allow-nan")
 
-        n_features = X.shape[1]
-        if causal_graph.shape != (n_features, n_features):
-            raise RuntimeError("The shape of causal_graph must be (n_features, n_features)")
-        
-        causal_graph[np.isnan(causal_graph)] = 0
+            n_features = X.shape[1]
+            if causal_graph.shape != (n_features, n_features):
+                raise RuntimeError("The shape of causal_graph must be (n_features, n_features)")
+            
+            causal_graph[np.isnan(causal_graph)] = 0
+        except Exception as e:
+            raise ValueError("causal_graph has an error: " + str(e))
 
         return causal_graph
 
 class CBSITimeSeriesLiNGAM(CBSILiNGAM):
-    def __init__(self):
-        return self
 
-class CBSILongitudinalLiNGAM(CBSILiNGAM):
-    def __init__(self):
-        return self
+    def __init__(self, X, causal_graph, is_discrete=None):
+        super().__init__(X, causal_graph, is_discrete=is_discrete)
+
+        self._exog_length = self._exog_length - self._n_lags
+
+    def get_data(self, var_names):
+        n_features = self._X.shape[1]
+
+        if isinstance(var_names, str):
+            var_names = [var_names]
+
+        X_ = []
+        for var_name in var_names:
+            index = self._endog_names.index(var_name)
+            X_index = index % n_features
+            lag = index // n_features
+
+            end = -lag if lag != 0 else None
+            data = self._X[self._n_lags - lag:end, X_index]
+
+            X_.append(data)
+        X_ = np.vstack(X_).T
+
+        return X_
+
+    def _check_causal_graph(self, causal_graph, X):
+        try:
+            causal_graph = check_array(causal_graph, allow_nd=True)
+            if len(causal_graph.shape) != 3:
+                raise ValueError("causal_graph must be 3 dimentional array.")
+
+            n_features = X.shape[1]
+            if causal_graph.shape[1:] != (n_features, n_features):
+                raise ValueError("The shape of causal_graph must be (n_lags, n_features, n_features)")
+        except Exception as e:
+            raise ValueError("causal_graph has an error: " + str(e))
+
+        coefs = np.concatenate(causal_graph, axis=1)
+
+        causal_graph_ = np.zeros((coefs.shape[1], coefs.shape[1]))
+        causal_graph_[:len(coefs)] = coefs
+
+        self._n_lags = len(causal_graph) - 1
+
+        return causal_graph_
+
+    def _make_var_names(self, causal_graph, X, is_discrete):
+        n_features = X.shape[1]
+
+        if isinstance(X, pd.DataFrame):
+            endog_names_ = X.columns.tolist()
+        else:
+            endog_names_ = [f"{i:d}" for i in range(n_features)]
+
+        endog_names = []
+        for i in range(self._n_lags + 1):
+            endog_names += [name + f"[{i}]" for name in endog_names_]
+
+        if is_discrete is None:
+            is_discrete = [False for _ in range(n_features)]
+            is_discrete *= self._n_lags + 1
+
+        discrete_endog_names = np.array(endog_names)[is_discrete].tolist()
+
+        return endog_names, discrete_endog_names
 
 class _LRPredictor():
 
@@ -221,6 +291,10 @@ class _LRPredictor():
         if len(self._coefs) == 0:
             return np.zeros((len(X), 1))
         return (self._coefs @ X.T).T
+
+    @property
+    def coefs_(self):
+        return coefs_
 
 class CausalBasedSimulator:
     """
@@ -443,10 +517,14 @@ class CausalBasedSimulator:
             if not isinstance(model_info, dict):
                 raise RuntimeError("changing_models shall be list of dictionaries.")
 
+            # check target_name
             if not isinstance(target_name, str):
                 raise TypeError("Key of changing_models must be str.")
             if target_name not in endog_names:
                 raise RuntimeError(f"Unknown name. ({target_name})")
+
+            if "model" not in model_info.keys():
+                raise KeyError("An element of changing_models must have model key.")
 
             # parent_names key
             if "parent_names" not in model_info.keys():
@@ -462,10 +540,21 @@ class CausalBasedSimulator:
                     if parent_name not in endog_names:
                         raise RuntimeError(f"Unknown name. ({name})")
 
+            if len(parent_names) == 0:
+                changing_models_[target_name] = {"model": None, "parent_names": []}
+                continue
+
+            # coefs and model key
+            if "coef" not in model_info.keys() and "model" not in model_info.keys():
+                raise KeyError("Elements of changing_models must have coef or model key when parent_names is set.")
+
             # coefs key
             if "coefs" not in model_info.keys():
                 coefs = None
             else:
+                cofes = model_info["coefs"]
+
+            if coefs is not None:
                 if not isinstance(model_info["coefs"], list):
                     raise TypeError("must be list")
 
@@ -478,22 +567,20 @@ class CausalBasedSimulator:
                 if len(coefs) != len(parent_names):
                     raise ValueError("len(coefs) != len(parent_names)")
 
-            # model key
-            if coefs is not None:
                 model = _LRPredictor(coefs)
-            else:
-                if "model" not in model_info.keys():
-                    raise KeyError("model must be set when coef is None.")
+                
+                changing_models_[target_name] = {"model": model, "parent_names": parent_names}
+                continue
+                
+            # model key
+            if "model" not in model_info.keys() or model_info["model"] is None:
+                raise KeyError("model must be set when coef is None.")
 
-                model = model_info["model"]
-                if model is None:
-                    raise ValueError("model must be set when coefs is None")
-                self._check_model_instance(model, target_name, discrete_endog_names)
+            model = model_info["model"]
+            self._check_model_instance(model, target_name, discrete_endog_names)
 
-            changing_models_[target_name] = {
-                "model": model,
-                "parent_names": parent_names,
-            }
+            changing_models_[target_name] = {"model": model, "parent_names": parent_names}
+
         return changing_models_
 
     def _dispatch_impl(self, cd_algo_name):
@@ -505,10 +592,8 @@ class CausalBasedSimulator:
             return CBSILiNGAM
         elif cd_algo_name == BottomUpParceLiNGAM.__name__:
             return CBSIUnobsCommonCauseLiNGAM
-        #elif cd_algo_name == VARLiNGAM.__name__:
-        #    return CBSITimeSeriesLiNGAM
-        #elif cd_algo_name == LongitudinalLiNGAM.__name__:
-        #    return CBSILongitudinalLiNGAM
+        elif cd_algo_name == VARLiNGAM.__name__:
+            return CBSITimeSeriesLiNGAM
         else:
             raise ValueError("Unknown")
 
