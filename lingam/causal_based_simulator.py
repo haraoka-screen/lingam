@@ -148,7 +148,8 @@ class CBSILiNGAM(CBSImpl):
         n_features = len(causal_graph)
 
         if isinstance(X, pd.DataFrame):
-            endog_names = X.columns.tolist()
+            endog_names = check_array(X.columns, ensure_2d=False, dtype=None)
+            endog_names = [str(endog_name) for endog_name in endog_names]
         else:
             endog_names = [f"{i:d}" for i in range(n_features)]
 
