@@ -20,7 +20,7 @@ from sklearn.model_selection._search import BaseSearchCV
 
 class CBSImpl(metaclass=ABCMeta):
 
-    def __init__(self, X, causal_graph):
+    def __init__(self, X, causal_graph, is_discrete=None):
         raise NotImplementedError
 
     @property
@@ -254,10 +254,10 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
         except Exception as e:
             raise ValueError("causal_graph has an error: " + str(e))
 
-        coefs = np.concatenate(causal_graph, axis=1)
+        coef = np.concatenate(causal_graph, axis=1)
 
-        causal_graph_ = np.zeros((coefs.shape[1], coefs.shape[1]))
-        causal_graph_[:len(coefs)] = coefs
+        causal_graph_ = np.zeros((coef.shape[1], coef.shape[1]))
+        causal_graph_[:len(coef)] = coef
 
         self._n_lags = len(causal_graph) - 1
 
@@ -285,17 +285,17 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
 
 class _LRPredictor():
 
-    def __init__(self, coefs):
-        self._coefs = np.array(coefs)
+    def __init__(self, coef):
+        self._coef = np.array(coef)
 
     def predict(self, X):
-        if len(self._coefs) == 0:
+        if len(self._coef) == 0:
             return np.zeros((len(X), 1))
-        return (self._coefs @ X.T).T
+        return (self._coef @ X.T).T
 
     @property
-    def coefs_(self):
-        return coefs_
+    def coef_(self):
+        return coef_
 
 class CausalBasedSimulator:
     """
@@ -310,7 +310,7 @@ class CausalBasedSimulator:
         result of simulation.
     """
 
-    def train(self, X, causal_graph, cd_algo_name=None, models=None):
+    def train(self, X, causal_graph, cd_algo_name=None, models=None, is_discrete=None):
         """
         Estimate functional relations between variables and variable
         distributions based on the training data ``X`` and the causal graph
@@ -339,11 +339,13 @@ class CausalBasedSimulator:
         self : Object
         """
 
+        if cd_algo_name is None:
+            cd_algo_name = "DirectLiNGAM"
         if not isinstance(cd_algo_name, str):
-            raise TypeError("cd_algo_name must be str.")
+            raise TypeError("cd_algo_name must be str or None.")
 
         impl_constructor = self._dispatch_impl(cd_algo_name)
-        impl = impl_constructor(X, causal_graph)
+        impl = impl_constructor(X, causal_graph, is_discrete=is_discrete)
 
         train_models = self._check_models(models, impl.endog_names_, impl.discrete_endog_names_)
 
@@ -524,63 +526,45 @@ class CausalBasedSimulator:
             if target_name not in endog_names:
                 raise RuntimeError(f"Unknown name. ({target_name})")
 
-            if "model" not in model_info.keys():
-                raise KeyError("An element of changing_models must have model key.")
-
             # parent_names key
             if "parent_names" not in model_info.keys():
-                raise KeyError("model_info must have \"parent_names\" key.")
+                raise KeyError("model_info must have parent_names key.")
 
             parent_names = model_info["parent_names"]
-            if parent_names is None:
-                parent_names = []
-            else:
-                if not isinstance(parent_names, list):
-                    raise TypeError("must be list ")
-                for parent_name in model_info["parent_names"]:
-                    if parent_name not in endog_names:
-                        raise RuntimeError(f"Unknown name. ({name})")
+            if not isinstance(parent_names, list):
+                raise KeyError("parent_names must be list.")
+
+            for parent_name in model_info["parent_names"]:
+                if parent_name not in endog_names:
+                    raise RuntimeError(f"Unknown name. ({name})")
 
             if len(parent_names) == 0:
-                changing_models_[target_name] = {"model": None, "parent_names": []}
+                changing_models_[target_name] = {"parent_names": []}
                 continue
 
-            # coefs and model key
+            # coef and model key
             if "coef" not in model_info.keys() and "model" not in model_info.keys():
                 raise KeyError("Elements of changing_models must have coef or model key when parent_names is set.")
 
-            # coefs key
-            if "coefs" not in model_info.keys():
-                coefs = None
-            else:
-                cofes = model_info["coefs"]
+            # coef key
+            if "coef" in model_info.keys():
+                coef = check_array(model_info["coef"], ensure_2d=False, ensure_min_samples=0)
+                if len(coef) != len(parent_names):
+                    raise ValueError("len(coef) != len(parent_names)")
 
-            if coefs is not None:
-                if not isinstance(model_info["coefs"], list):
-                    raise TypeError("must be list")
-
-                coefs_ = []
-                for coef in model_info["coefs"]:
-                    coef_ = check_scalar(coef, "coef", (numbers.Integral, np.integer, float, np.bool_))
-                    coefs_.append(coef_)
-                coefs = coefs_
-
-                if len(coefs) != len(parent_names):
-                    raise ValueError("len(coefs) != len(parent_names)")
-
-                model = _LRPredictor(coefs)
+                model = _LRPredictor(coef)
                 
-                changing_models_[target_name] = {"model": model, "parent_names": parent_names}
+                changing_models_[target_name] = {"parent_names": parent_names, "model": model}
                 continue
                 
             # model key
             if "model" not in model_info.keys() or model_info["model"] is None:
-                raise KeyError("model must be set when coef is None.")
+                raise KeyError("model must be set when coef isn't set.")
 
             model = model_info["model"]
             self._check_model_instance(model, target_name, discrete_endog_names)
 
-            changing_models_[target_name] = {"model": model, "parent_names": parent_names}
+            changing_models_[target_name] = {"parent_names": parent_names, "model": model}
 
         return changing_models_
 
@@ -603,6 +587,7 @@ class CausalBasedSimulator:
 
         for target_name in impl.endog_names_:
             y = impl.get_data(target_name)
+            y = y.ravel()
 
             parent_names = impl.get_parent_names(target_name)
             if len(parent_names) == 0:
@@ -610,7 +595,7 @@ class CausalBasedSimulator:
                     "model": None,
                     "parent_names": [],
                     "predicted": None,
-                    "residual": y.ravel(),
+                    "residual": y,
                 }
                 continue
             X = impl.get_data(parent_names)
@@ -628,18 +613,19 @@ class CausalBasedSimulator:
 
             model.fit(X, y)
             predicted = model.predict(X)
+            predicted = predicted.ravel()
 
             # compute residuals
             if not is_classifier:
-                residual = y - predicted
+                residual = (y - predicted).ravel()
             else:
                 residual = None
 
             train_result[target_name] = {
                 "model": model,
                 "parent_names": parent_names,
-                "predicted": predicted.ravel(),
-                "residual": residual.ravel(),
+                "predicted": predicted,
+                "residual": residual,
             }
 
         return train_result
@@ -676,7 +662,7 @@ class CausalBasedSimulator:
             else:
                 error = changing_exog[target_name].ravel()
 
-            if shuffle_residual:
+            if shuffle_residual and error is not None:
                 error = error[shuffle_index]
 
             # data
