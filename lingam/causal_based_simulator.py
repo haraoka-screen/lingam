@@ -3,7 +3,6 @@ from .ica_lingam import ICALiNGAM
 from .bottom_up_parce_lingam import BottomUpParceLiNGAM
 from .var_lingam import VARLiNGAM
 from .longitudinal_lingam import LongitudinalLiNGAM
-#from lingam import DirectLiNGAM, BottomUpParceLiNGAM
 
 from abc import ABCMeta, abstractmethod
 import numbers
@@ -17,6 +16,409 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.base import RegressorMixin, ClassifierMixin, clone
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection._search import BaseSearchCV
+
+
+class CausalBasedSimulator:
+    """
+    Causal based simulator.
+
+    Attributes
+    ----------
+    train_result_ : dict
+        Information about trained models.
+    """
+
+    def train(self, X, causal_graph, cd_algo_name=None, models=None, is_discrete=None):
+        """
+        Estimate functional relations between variables and variable
+        distributions based on the training data ``X`` and the causal graph.
+        The functional relations represents by
+        sklearn.linear_model.LinearRegression if the object variable is
+        numeric, and represents by sklearn.linear_model.LogisticRegression
+        if the object variable is categorical by default. ``train_result_``
+        and ``residual_`` will be exposed after executing train().
+
+        Parameters
+        ----------
+        X : array-like
+            Training data.
+
+        causal_graph : array-like
+            Causal graph.
+
+        cd_algo_name : str
+            Algorithm type.
+
+        models : dict, default=None
+            Dictionary about models of variables. Models are cloned internaly
+            and are trained to infer functioal relations. Given instances of
+            the model are cloned to estimate the functional relation between
+            variables.
+
+        Returns
+        -------
+        self : Object
+        """
+
+        if cd_algo_name is None:
+            cd_algo_name = "DirectLiNGAM"
+        if not isinstance(cd_algo_name, str):
+            raise TypeError("cd_algo_name must be str or None.")
+
+        impl_constructor = self._dispatch_impl(cd_algo_name)
+        impl = impl_constructor(X, causal_graph, is_discrete=is_discrete)
+
+        train_models = self._check_models(models, impl.endog_names_, impl.discrete_endog_names_)
+
+        train_result = self._train(train_models, causal_graph, impl)
+
+        self._impl = impl
+        self._train_result = train_result
+        return self
+
+    def run(
+        self,
+        changing_exog=None,
+        changing_models=None,
+        shuffle_residual=False,
+        random_state=None,
+    ):
+        """
+        Generate simulated data using trained models and the given
+        causal graph with given exogenous data and models.
+        Specifying environmental changes to ``changing_exog`` or
+        specifiyig changes in fucitonal relation to ``change_models``
+        effects simulated data.
+        Residuals to simulate variables are shuffled using radom_state
+        if ``shuffle_residual`` is True.
+
+        Parameters
+        ----------
+        changing_exog : dict, default=None
+            Dictioary about exogeous variables which keys are variable
+            names and values are data of variables. That variable name
+            should be a one of column names of X and the length should
+            be same as X.
+
+        changing_model : dict, default=None
+            Dictionary about the changing models which elements are dictionary.
+            The key is the name of the target variable and that value is
+            a dictionary for that model. This dictionary contains three keys,
+            parant_names, coef and model. parent_names is the mandatory key and
+            whose value is the list of parent names. coef and model are selective. 
+            coef is the list of the coefficients of the parent variables, which
+            must be same lenght as parent_names. The value of model must be
+            a trained machine laerning instance.
+
+        shuffle_residual : bool, default=True
+            If True, residuals are shuffled.
+
+        random_state : int, default=None
+            If shuffle_residual is True, random_state is used as seed.
+
+        Returns
+        -------
+        simulated_data : pandas.DataFrame
+            simulated data.
+        """
+
+        if self._train_result is None:
+            raise RuntimeError("run() must be executed after train() is executed")
+
+        random_state = check_random_state(random_state)
+
+        # check inputs
+        changing_exog = self._check_changing_exog(
+            changing_exog,
+            self._impl.exog_length_,
+            self._impl.endog_names_,
+            self._impl.discrete_endog_names_
+        )
+
+        changing_models = self._check_changing_models(
+            changing_models,
+            self._impl.endog_names_,
+            self._impl.discrete_endog_names_
+        )
+
+        simulated_data = self._simulate(
+            changing_exog,
+            changing_models,
+            self._impl,
+            self._train_result,
+            shuffle_residual,
+            random_state,
+        )
+
+        return simulated_data
+
+    @property
+    def train_result_(self):
+        return self._train_result
+
+    def _check_model_instance(self, model, var_name, discrete_endog_names):
+        if var_name not in discrete_endog_names:
+            model_type = RegressorMixin
+        else:
+            model_type = ClassifierMixin
+
+        if isinstance(model, Pipeline):
+            if not isinstance(model.steps[-1][-1], model_type):
+                raise RuntimeError(
+                    "The last step in Pipeline should be an "
+                    + "instance of a regression/classification model."
+                )
+        elif isinstance(model, BaseSearchCV):
+            if not isinstance(model.get_params()["estimator"], model_type):
+                raise RuntimeError(
+                    "The type of the estimator shall be an "
+                    + "instance of a regression/classification model."
+                )
+        else:
+            if not isinstance(model, model_type):
+                raise RuntimeError(
+                    "The type of the estimator shall be an "
+                    + "instance of a regression/classification model."
+                )
+
+        if model_type == ClassifierMixin:
+            try:
+                func = getattr(model, "predict_proba")
+                if not callable(func):
+                    raise Exception
+            except Exception:
+                raise RuntimeError(
+                    "Classification models shall have " + "predict_proba()."
+                )
+
+    def _check_models(self, models, endog_names, discrete_endog_names):
+        if models is None:
+            return {}
+
+        if not isinstance(models, dict):
+            raise RuntimeError("models must be a dictionary.")
+
+        for var_name, model in models.items():
+            if var_name not in endog_names:
+                raise RuntimeError(f"Unknown variable name ({var_name})")
+
+            self._check_model_instance(model, endog_names, discrete_endog_names)
+
+        return models
+
+    def _check_changing_exog(self, changing_exog, n_samples, endog_names, discrete_endog_names):
+        if changing_exog is None:
+            return {}
+
+        if not isinstance(changing_exog, dict):
+            raise RuntimeError("changing_exog must be a dictionary.")
+
+        changing_exog_ = {}
+        for var_name, values in changing_exog.items():
+            if var_name not in endog_names:
+                raise RuntimeError(f"Unknown key in changing_exog. ({var_name})")
+
+            if var_name in discrete_endog_names:
+                raise RuntimeError(
+                    f"Category variables shall not be specified. ({var_name})"
+                )
+
+            s = check_array(values, ensure_2d=False, dtype=None).ravel()
+            if s.shape[0] != n_samples:
+                raise RuntimeError(f"Wrong length. ({s.shape[0]} != {n_samples})")
+
+            changing_exog_[var_name] = values
+
+        return changing_exog_
+
+    def _check_changing_models(self, changing_models, endog_names, discrete_endog_names):
+        if changing_models is None:
+            return {}
+
+        if not isinstance(changing_models, dict):
+            raise RuntimeError("changing_models shall be list.")
+
+        changing_models_ = {}
+        for target_name, model_info in changing_models.items():
+            if not isinstance(model_info, dict):
+                raise RuntimeError("changing_models shall be list of dictionaries.")
+
+            # check target_name
+            if not isinstance(target_name, str):
+                raise TypeError("Key of changing_models must be str.")
+            if target_name not in endog_names:
+                raise RuntimeError(f"Unknown name. ({target_name})")
+
+            # parent_names key
+            if "parent_names" not in model_info.keys():
+                raise KeyError("model_info must have parent_names key.")
+
+            parent_names = model_info["parent_names"]
+            if not isinstance(parent_names, list):
+                raise KeyError("parent_names must be list.")
+
+            for parent_name in model_info["parent_names"]:
+                if parent_name not in endog_names:
+                    raise RuntimeError(f"Unknown name. ({name})")
+
+            if len(parent_names) == 0:
+                changing_models_[target_name] = {"parent_names": []}
+                continue
+
+            # coef and model key
+            if "coef" not in model_info.keys() and "model" not in model_info.keys():
+                raise KeyError("Elements of changing_models must have coef or model key when parent_names is set.")
+
+            # coef key
+            if "coef" in model_info.keys():
+                coef = check_array(model_info["coef"], ensure_2d=False, ensure_min_samples=0)
+                if len(coef) != len(parent_names):
+                    raise ValueError("len(coef) != len(parent_names)")
+
+                if target_name not in discrete_endog_names:
+                    model = _LinearRegression(coef)
+                else:
+                    model = _LogisticRegression(coef)
+                
+                changing_models_[target_name] = {"parent_names": parent_names, "model": model}
+                continue
+                
+            # model key
+            if "model" not in model_info.keys() or model_info["model"] is None:
+                raise KeyError("model must be set when coef isn't set.")
+
+            model = model_info["model"]
+            self._check_model_instance(model, target_name, discrete_endog_names)
+
+            changing_models_[target_name] = {"parent_names": parent_names, "model": model}
+
+        return changing_models_
+
+    def _dispatch_impl(self, cd_algo_name):
+        if cd_algo_name is None:
+            return CBSILiNGAM
+        elif cd_algo_name == DirectLiNGAM.__name__:
+            return CBSILiNGAM
+        elif cd_algo_name == ICALiNGAM.__name__:
+            return CBSILiNGAM
+        elif cd_algo_name == BottomUpParceLiNGAM.__name__:
+            return CBSIUnobsCommonCauseLiNGAM
+        elif cd_algo_name == VARLiNGAM.__name__:
+            return CBSITimeSeriesLiNGAM
+        else:
+            raise ValueError("Unknown cd_algo_name")
+
+    def _train(self, models, causal_graph, impl):
+        train_result = {}
+
+        for target_name in impl.endog_names_:
+            y = impl.get_data(target_name)
+            y = y.ravel()
+
+            parent_names = impl.get_parent_names(target_name)
+            if len(parent_names) == 0:
+                train_result[target_name] = {
+                    "model": None,
+                    "parent_names": [],
+                    "predicted": None,
+                    "residual": y,
+                }
+                continue
+            X = impl.get_data(parent_names)
+
+            is_classifier = target_name in impl.discrete_endog_names_
+
+            # select a model to train
+            if target_name in models.keys():
+                model = clone(models[target_name])
+            else:
+                if is_classifier:
+                    model = LogisticRegression()
+                else:
+                    model = LinearRegression()
+
+            model.fit(X, y)
+            predicted = model.predict(X)
+            predicted = predicted.ravel()
+
+            # compute residuals
+            if not is_classifier:
+                residual = (y - predicted).ravel()
+            else:
+                residual = None
+
+            train_result[target_name] = {
+                "model": model,
+                "parent_names": parent_names,
+                "predicted": predicted,
+                "residual": residual,
+            }
+
+        return train_result
+
+    def _simulate(
+        self,
+        changing_exog,
+        changing_models,
+        impl,
+        train_result,
+        shuffle_residual,
+        random_state,
+    ):
+        simulated = pd.DataFrame(columns=impl.endog_names_)
+
+        if shuffle_residual:
+            shuffle_index = random_state.choice(
+                np.arange(impl.exog_length_),
+                size=impl.exog_length_,
+                replace=False
+            )
+
+        # modify causal order
+        changing_edges = {}
+        for target_name, info in changing_models.items():
+            changing_edges[target_name] = info["parent_names"]
+        causal_order = self._impl.get_causal_order(changing_edges)
+
+        # predict from upstream to downstream
+        for target_name in causal_order:
+            # error
+            if target_name not in changing_exog.keys():
+                error = train_result[target_name]["residual"]
+            else:
+                error = changing_exog[target_name].ravel()
+
+            if shuffle_residual and error is not None:
+                error = error[shuffle_index]
+
+            # data
+            parent_names = impl.get_parent_names(target_name)
+            if target_name in changing_models.keys():
+                parent_names_ = changing_models[target_name]["parent_names"]
+                if parent_names_ is not None:
+                    parent_names = parent_names_
+ 
+            if len(parent_names) == 0:
+                simulated[target_name] = error
+                continue
+
+            X = simulated[parent_names]
+
+            # model
+            if target_name not in changing_models.keys():
+                model = train_result[target_name]["model"]
+            else:
+                model = changing_models[target_name]["model"]
+
+            # predict
+            predicted = model.predict(X.values)
+            predicted = predicted.ravel()
+            if target_name not in impl.discrete_endog_names_:
+                predicted = predicted + error
+
+            simulated[target_name] = predicted
+
+        return simulated
 
 
 class CBSImpl(metaclass=ABCMeta):
@@ -93,7 +495,7 @@ class CBSILiNGAM(CBSImpl):
 
     def get_parent_names(self, var_name):
         if var_name not in self._endog_names:
-            raise ValueError("not exist")
+            raise ValueError(f"Unknown variable. {var_name}")
 
         causal_graph = ~np.isclose(self._causal_graph, 0)
 
@@ -251,7 +653,7 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
 
             n_features = X.shape[1]
             if causal_graph.shape[1:] != (n_features, n_features):
-                raise ValueError("The shape of causal_graph must be (n_lags, n_features, n_features)")
+                raise ValueError("The shape of causal_graph must be (n_lags+1, n_features, n_features)")
         except Exception as e:
             raise ValueError("causal_graph has an error: " + str(e))
 
@@ -279,7 +681,6 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
             else:
                 index_format = f"[t-{i}]"
             endog_names += [name + index_format for name in endog_names_]
-            #endog_names += [name + f"[t-{i}]" for name in endog_names_]
 
         if is_discrete is None:
             is_discrete = [False for _ in range(n_features)]
@@ -318,404 +719,3 @@ class _LogisticRegression():
     @property
     def coef_(self):
         return coef_
-
-class CausalBasedSimulator:
-    """
-    Causal based simulator.
-
-    Attributes
-    ----------
-    train_result_ : dict of string -> list of namedtuple
-        information about trained models.
-
-    simulated_data_ : pandas.DataFrame
-        result of simulation.
-    """
-
-    def train(self, X, causal_graph, cd_algo_name=None, models=None, is_discrete=None):
-        """
-        Estimate functional relations between variables and variable
-        distributions based on the training data ``X`` and the causal graph
-        ``G``. The functional relations represents by
-        sklearn.linear_model.LinearRegression if the object variable is
-        numeric, and represents by sklearn.linear_model.LogisticRegression
-        if the object variable is categorical by default. ``train_result_``
-        and ``residual_`` will be exposed after executing train().
-
-        Parameters
-        ----------
-        X : array-like
-            Training data.
-
-        causal_graph : array-like of shape (n_features, _features)
-            Causal graph.
-
-        models : dict of string -> object, default=None
-            Dictionary about models of variables. Models are cloned internaly
-            and are trained to infer functioal relations. Given instances of
-            the model are cloned to estimate the functional relation between
-            variables.
-
-        Returns
-        -------
-        self : Object
-        """
-
-        if cd_algo_name is None:
-            cd_algo_name = "DirectLiNGAM"
-        if not isinstance(cd_algo_name, str):
-            raise TypeError("cd_algo_name must be str or None.")
-
-        impl_constructor = self._dispatch_impl(cd_algo_name)
-        impl = impl_constructor(X, causal_graph, is_discrete=is_discrete)
-
-        train_models = self._check_models(models, impl.endog_names_, impl.discrete_endog_names_)
-
-        train_result = self._train(train_models, causal_graph, impl)
-
-        self._impl = impl
-        self._train_result = train_result
-        return self
-
-    def run(
-        self,
-        changing_exog=None,
-        changing_models=None,
-        shuffle_residual=False,
-        random_state=None,
-    ):
-        """
-        Generate simulated data using trained models and the given
-        causal graph with given exogenous data and models.
-        Specifying environmental changes to ``changing_exog`` or
-        specifiyig changes in fucitonal relation to ``change_models``
-        effects simulated data.
-        Residuals to simulate variables are shuffled using radom_state
-        if ``shuffle_residual`` is True. ``simulated_data_`` will be
-        expose after excuting train().
-
-        Parameters
-        ----------
-        changing_exog : dict of string -> array-like, default=None
-            Dictioary about exogeous variables which keys are variable
-            names and values are data of variables. That variable name
-            should be a one of column names of X and the length should
-            be same as X.
-
-        changing_model : list of dict, default=None
-            List of the changing models which elements are dictionary. that
-            keys should be name, condition, and model. For name and
-            condition, refer to ``train_result_`` and set the values
-            corresponding to the conditions you wish to change. For model,
-            you must provide a trained machine learning instance.
-
-        shuffle_residual : bool, default=True
-            If True, residuals are shuffled.
-
-        random_state : int, default=None
-            If shuffle_residual is True, random_state is used as seed.
-
-        Returns
-        -------
-        simulated_data : pandas.DataFrame
-            simulated data.
-        """
-
-        if self._train_result is None:
-            raise RuntimeError("run() must be executed after train() is executed")
-
-        random_state = check_random_state(random_state)
-
-        # check inputs
-        changing_exog = self._check_changing_exog(
-            changing_exog,
-            self._impl.exog_length_,
-            self._impl.endog_names_,
-            self._impl.discrete_endog_names_
-        )
-
-        changing_models = self._check_changing_models(
-            changing_models,
-            self._impl.endog_names_,
-            self._impl.discrete_endog_names_
-        )
-
-        simulated_data = self._simulate(
-            changing_exog,
-            changing_models,
-            self._impl,
-            self._train_result,
-            shuffle_residual,
-            random_state,
-        )
-
-        return simulated_data
-
-    @property
-    def train_result_(self):
-        return self._train_result
-
-    def _check_model_instance(self, model, var_name, discrete_endog_names):
-        if var_name not in discrete_endog_names:
-            model_type = RegressorMixin
-        else:
-            model_type = ClassifierMixin
-
-        if isinstance(model, Pipeline):
-            if not isinstance(model.steps[-1][-1], model_type):
-                raise RuntimeError(
-                    "The last step in Pipeline should be an "
-                    + "instance of a regression/classification model."
-                )
-        elif isinstance(model, BaseSearchCV):
-            if not isinstance(model.get_params()["estimator"], model_type):
-                raise RuntimeError(
-                    "The type of the estimator shall be an "
-                    + "instance of a regression/classification model."
-                )
-        else:
-            if not isinstance(model, model_type):
-                raise RuntimeError(
-                    "The type of the estimator shall be an "
-                    + "instance of a regression/classification model."
-                )
-
-        if model_type == ClassifierMixin:
-            try:
-                func = getattr(model, "predict_proba")
-                if not callable(func):
-                    raise Exception
-            except Exception:
-                raise RuntimeError(
-                    "Classification models shall have " + "predict_proba()."
-                )
-
-    def _check_models(self, models, endog_names, discrete_endog_names):
-        if models is None:
-            return {}
-
-        if not isinstance(models, dict):
-            raise RuntimeError("models must be a dictionary.")
-
-        for var_name, model in models.items():
-            if var_name not in endog_names:
-                raise RuntimeError(f"Unknown variable name ({var_name})")
-
-            self._check_model_instance(model, endog_name, discrete_endog_names)
-
-        return models
-
-    def _check_changing_exog(self, changing_exog, n_samples, endog_names, discrete_endog_names):
-        if changing_exog is None:
-            return {}
-
-        if not isinstance(changing_exog, dict):
-            raise RuntimeError("changing_exog must be a dictionary.")
-
-        changing_exog_ = {}
-        for var_name, values in changing_exog.items():
-            if var_name not in exog_names:
-                raise RuntimeError(f"Unknown key in changing_exog. ({col_name})")
-
-            if var_name in discrete_endog_names:
-                raise RuntimeError(
-                    f"Category variables shall not be specified. ({col_name})"
-                )
-
-            s = check_array(values, ensure_2d=False, dtype=None).ravel()
-            if s.shape[0] != len(index):
-                raise RuntimeError(f"Wrong length. ({s.shape[0]} != {len(index)})")
-
-            changing_exog_[var_name] = values
-
-        return changing_exog_
-
-    def _check_changing_models(self, changing_models, endog_names, discrete_endog_names):
-        if changing_models is None:
-            return {}
-
-        if not isinstance(changing_models, dict):
-            raise RuntimeError("changing_models shall be list.")
-
-        changing_models_ = {}
-        for target_name, model_info in changing_models.items():
-            if not isinstance(model_info, dict):
-                raise RuntimeError("changing_models shall be list of dictionaries.")
-
-            # check target_name
-            if not isinstance(target_name, str):
-                raise TypeError("Key of changing_models must be str.")
-            if target_name not in endog_names:
-                raise RuntimeError(f"Unknown name. ({target_name})")
-
-            # parent_names key
-            if "parent_names" not in model_info.keys():
-                raise KeyError("model_info must have parent_names key.")
-
-            parent_names = model_info["parent_names"]
-            if not isinstance(parent_names, list):
-                raise KeyError("parent_names must be list.")
-
-            for parent_name in model_info["parent_names"]:
-                if parent_name not in endog_names:
-                    raise RuntimeError(f"Unknown name. ({name})")
-
-            if len(parent_names) == 0:
-                changing_models_[target_name] = {"parent_names": []}
-                continue
-
-            # coef and model key
-            if "coef" not in model_info.keys() and "model" not in model_info.keys():
-                raise KeyError("Elements of changing_models must have coef or model key when parent_names is set.")
-
-            # coef key
-            if "coef" in model_info.keys():
-                coef = check_array(model_info["coef"], ensure_2d=False, ensure_min_samples=0)
-                if len(coef) != len(parent_names):
-                    raise ValueError("len(coef) != len(parent_names)")
-
-                if target_name not in discrete_endog_names:
-                    model = _LinearRegression(coef)
-                else:
-                    model = _LogisticRegression(coef)
-                
-                changing_models_[target_name] = {"parent_names": parent_names, "model": model}
-                continue
-                
-            # model key
-            if "model" not in model_info.keys() or model_info["model"] is None:
-                raise KeyError("model must be set when coef isn't set.")
-
-            model = model_info["model"]
-            self._check_model_instance(model, target_name, discrete_endog_names)
-
-            changing_models_[target_name] = {"parent_names": parent_names, "model": model}
-
-        return changing_models_
-
-    def _dispatch_impl(self, cd_algo_name):
-        if cd_algo_name is None:
-            return CBSILiNGAM
-        elif cd_algo_name == DirectLiNGAM.__name__:
-            return CBSILiNGAM
-        elif cd_algo_name == ICALiNGAM.__name__:
-            return CBSILiNGAM
-        elif cd_algo_name == BottomUpParceLiNGAM.__name__:
-            return CBSIUnobsCommonCauseLiNGAM
-        elif cd_algo_name == VARLiNGAM.__name__:
-            return CBSITimeSeriesLiNGAM
-        else:
-            raise ValueError("Unknown")
-
-    def _train(self, models, causal_graph, impl):
-        train_result = {}
-
-        for target_name in impl.endog_names_:
-            y = impl.get_data(target_name)
-            y = y.ravel()
-
-            parent_names = impl.get_parent_names(target_name)
-            if len(parent_names) == 0:
-                train_result[target_name] = {
-                    "model": None,
-                    "parent_names": [],
-                    "predicted": None,
-                    "residual": y,
-                }
-                continue
-            X = impl.get_data(parent_names)
-
-            is_classifier = target_name in impl.discrete_endog_names_
-
-            # select a model to train
-            if target_name in models.keys():
-                model = clone(models[target_name])
-            else:
-                if is_classifier:
-                    model = LogisticRegression()
-                else:
-                    model = LinearRegression()
-
-            model.fit(X, y)
-            predicted = model.predict(X)
-            predicted = predicted.ravel()
-
-            # compute residuals
-            if not is_classifier:
-                residual = (y - predicted).ravel()
-            else:
-                residual = None
-
-            train_result[target_name] = {
-                "model": model,
-                "parent_names": parent_names,
-                "predicted": predicted,
-                "residual": residual,
-            }
-
-        return train_result
-
-    def _simulate(
-        self,
-        changing_exog,
-        changing_models,
-        impl,
-        train_result,
-        shuffle_residual,
-        random_state,
-    ):
-        simulated = pd.DataFrame(columns=impl.endog_names_)
-
-        if shuffle_residual:
-            shuffle_index = random_state.choice(
-                np.arange(impl.exog_length_),
-                size=impl.exog_length_,
-                replace=False
-            )
-
-        # modify causal order
-        changing_edges = {}
-        for target_name, info in changing_models.items():
-            changing_edges[target_name] = info["parent_names"]
-        causal_order = self._impl.get_causal_order(changing_edges)
-
-        # predict from upstream to downstream
-        for target_name in causal_order:
-            # error
-            if target_name not in changing_exog.keys():
-                error = train_result[target_name]["residual"]
-            else:
-                error = changing_exog[target_name].ravel()
-
-            if shuffle_residual and error is not None:
-                error = error[shuffle_index]
-
-            # data
-            parent_names = impl.get_parent_names(target_name)
-            if target_name in changing_models.keys():
-                parent_names_ = changing_models[target_name]["parent_names"]
-                if parent_names_ is not None:
-                    parent_names = parent_names_
- 
-            if len(parent_names) == 0:
-                simulated[target_name] = error
-                continue
-
-            X = simulated[parent_names]
-
-            # model
-            if target_name not in changing_models.keys():
-                model = train_result[target_name]["model"]
-            else:
-                model = changing_models[target_name]["model"]
-
-            # predict
-            predicted = model.predict(X.values)
-            predicted = predicted.ravel()
-            if target_name not in impl.discrete_endog_names_:
-                predicted = predicted + error
-
-            simulated[target_name] = predicted
-
-        return simulated
-
