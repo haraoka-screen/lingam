@@ -10,6 +10,7 @@ import numbers
 
 import numpy as np
 import pandas as pd
+from scipy.special import expit
 
 from sklearn.utils import check_array, check_scalar, check_random_state
 from sklearn.linear_model import LinearRegression, LogisticRegression
@@ -273,17 +274,24 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
 
         endog_names = []
         for i in range(self._n_lags + 1):
-            endog_names += [name + f"[{i}]" for name in endog_names_]
+            if i == 0:
+                index_format = f"[t]"
+            else:
+                index_format = f"[t-{i}]"
+            endog_names += [name + index_format for name in endog_names_]
+            #endog_names += [name + f"[t-{i}]" for name in endog_names_]
 
         if is_discrete is None:
             is_discrete = [False for _ in range(n_features)]
             is_discrete *= self._n_lags + 1
+        else:
+            is_discrete = is_discrete * (self._n_lags + 1)
 
         discrete_endog_names = np.array(endog_names)[is_discrete].tolist()
 
         return endog_names, discrete_endog_names
 
-class _LRPredictor():
+class _LinearRegression():
 
     def __init__(self, coef):
         self._coef = np.array(coef)
@@ -292,6 +300,20 @@ class _LRPredictor():
         if len(self._coef) == 0:
             return np.zeros((len(X), 1))
         return (self._coef @ X.T).T
+
+    @property
+    def coef_(self):
+        return coef_
+
+class _LogisticRegression():
+
+    def __init__(self, coef):
+        self._coef = np.array(coef)
+
+    def predict(self, X):
+        if len(self._coef) == 0:
+            return np.zeros((len(X), 1))
+        return expit((self._coef @ X.T).T) >= 0.5
 
     @property
     def coef_(self):
@@ -552,7 +574,10 @@ class CausalBasedSimulator:
                 if len(coef) != len(parent_names):
                     raise ValueError("len(coef) != len(parent_names)")
 
-                model = _LRPredictor(coef)
+                if target_name not in discrete_endog_names:
+                    model = _LinearRegression(coef)
+                else:
+                    model = _LogisticRegression(coef)
                 
                 changing_models_[target_name] = {"parent_names": parent_names, "model": model}
                 continue
