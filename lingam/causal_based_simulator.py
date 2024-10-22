@@ -220,7 +220,7 @@ class CausalBasedSimulator:
 
             if var_name in discrete_endog_names:
                 raise RuntimeError(
-                    f"Category variables shall not be specified. ({var_name})"
+                    f"Discrete variables shall not be specified. ({var_name})"
                 )
 
             s = check_array(values, ensure_2d=False, dtype=None).ravel()
@@ -324,6 +324,7 @@ class CausalBasedSimulator:
                     "residual": y,
                 }
                 continue
+
             X = impl.get_data(parent_names)
 
             is_classifier = target_name in impl.discrete_endog_names_
@@ -365,7 +366,7 @@ class CausalBasedSimulator:
         shuffle_residual,
         random_state,
     ):
-        simulated = pd.DataFrame(columns=impl.endog_names_)
+        simulated = pd.DataFrame(index=np.arange(impl.exog_length_), columns=impl.endog_names_)
 
         if shuffle_residual:
             shuffle_index = random_state.choice(
@@ -382,6 +383,15 @@ class CausalBasedSimulator:
 
         # predict from upstream to downstream
         for target_name in causal_order:
+            is_classifier = target_name in impl.discrete_endog_names_
+
+            # data
+            parent_names = impl.get_parent_names(target_name)
+            if target_name in changing_models.keys():
+                parent_names_ = changing_models[target_name]["parent_names"]
+                if parent_names_ is not None:
+                    parent_names = parent_names_
+
             # error
             if target_name not in changing_exog.keys():
                 error = train_result[target_name]["residual"]
@@ -391,18 +401,13 @@ class CausalBasedSimulator:
             if shuffle_residual and error is not None:
                 error = error[shuffle_index]
 
-            # data
-            parent_names = impl.get_parent_names(target_name)
-            if target_name in changing_models.keys():
-                parent_names_ = changing_models[target_name]["parent_names"]
-                if parent_names_ is not None:
-                    parent_names = parent_names_
- 
+            # exogenous variable
             if len(parent_names) == 0:
-                simulated[target_name] = error
+                if not is_classifier:
+                    simulated[target_name] = error
+                else:
+                    simulated[target_name] = impl.get_data(target_name)
                 continue
-
-            X = simulated[parent_names]
 
             # model
             if target_name not in changing_models.keys():
@@ -411,9 +416,10 @@ class CausalBasedSimulator:
                 model = changing_models[target_name]["model"]
 
             # predict
-            predicted = model.predict(X.values)
+            predicted = model.predict(simulated[parent_names].values)
+
             predicted = predicted.ravel()
-            if target_name not in impl.discrete_endog_names_:
+            if not is_classifier:
                 predicted = predicted + error
 
             simulated[target_name] = predicted
@@ -637,8 +643,7 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
             X_index = index % n_features
             lag = index // n_features
 
-            end = -lag if lag != 0 else None
-            data = self._X[self._n_lags - lag:end, X_index]
+            data = self._X[self._n_lags - lag:-lag if lag != 0 else None, X_index]
 
             X_.append(data)
         X_ = np.vstack(X_).T
