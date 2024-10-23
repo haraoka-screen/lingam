@@ -8,7 +8,7 @@ from scipy.special import expit
 import matplotlib.pyplot as plt
 
 from sklearn.utils import check_array
-from lingam import CausalBasedSimulator
+from lingam import DirectLiNGAM, BottomUpParceLiNGAM, VARLiNGAM, CausalBasedSimulator
 
 
 class CausalDigitalTwin:
@@ -34,8 +34,25 @@ class CausalDigitalTwin:
         # 変更前の真のデータ
         X, error = data_gen_func(causal_graph, error)
 
+        # 真のデータを元に因果探索を実行して因果グラフを推定する。
+        if cd_algo_name == "DirectLiNGAM":
+            cd_model = DirectLiNGAM()
+        elif cd_algo_name == "BottomUpParceLiNGAM":
+            cd_model = BottomUpParceLiNGAM()
+        elif cd_algo_name == "VARLiNGAM":
+            cd_model = VARLiNGAM()
+        else:
+            raise ValueError("Unknown cd_algo_name")
+
+        cd_model.fit(X)
+
+        if cd_algo_name == "DirectLiNGAM" or cd_algo_name == "BottomUpParceLiNGAM":
+            est_adj = cd_model.adjacency_matrix_
+        elif cd_algo_name == "VARLiNGAM":
+            est_adj = cd_model.adjacency_matrices_
+
         sim = CausalBasedSimulator()
-        sim.train(X, causal_graph, cd_algo_name=cd_algo_name, is_discrete=is_discrete)
+        sim.train(X, est_adj, cd_algo_name=cd_algo_name, is_discrete=is_discrete)
 
         self._X = X
         self._error = error
@@ -45,6 +62,7 @@ class CausalDigitalTwin:
         self._data_gen_func = data_gen_func
         self._sink_index = sink_index
         self._is_discrete = is_discrete
+        self._est_adj = est_adj
     
     def run(self, ml_models, eval_funcs, causal_graph=None, error=None, shuffle_residual=False):
         """
@@ -69,6 +87,7 @@ class CausalDigitalTwin:
         if causal_graph is None:
             changing_models = None
         else:
+            # 真のDAGとユーザが真のDAGを見ながら更新したDAGの差分からchanging_modelsを作成する。
             changing_models = self._make_changing_models(self._causal_graph, causal_graph)
         
         if error is None:
@@ -96,11 +115,9 @@ class CausalDigitalTwin:
         else:
             index = (self._sink_index,)
         # 変化前のシンク変数の親
-        #parent_indices = np.argwhere(~np.isclose(causal_graph[*index], 0)).ravel()
-        parent_indices = np.argwhere(~np.isclose(causal_graph[-2, self._sink_index], 0)).ravel()
+        parent_indices = np.argwhere(~np.isclose(causal_graph[index], 0)).ravel()
         # 変化後のシンク変数の親
-        #parent_indices2 = np.argwhere(~np.isclose(causal_graph2[*index], 0)).ravel()
-        parent_indices2 = np.argwhere(~np.isclose(causal_graph2[-2, self._sink_index], 0)).ravel()
+        parent_indices2 = np.argwhere(~np.isclose(causal_graph2[index], 0)).ravel()
 
         evaluates, predicted, configs = self._evaluate(self._X, X2, simulated, self._sink_index, parent_indices, parent_indices2, ml_models, eval_funcs)
         
@@ -116,6 +133,8 @@ class CausalDigitalTwin:
         return ret
     
     def _make_changing_models(self, causal_graph, causal_graph2):
+        """ グラフ間の差分からchanging_modelsを作成する。"""
+
         # 未観測共通原因は0にしておく
         causal_graph[np.isnan(causal_graph)] = 0
         causal_graph2[np.isnan(causal_graph2)] = 0
@@ -299,10 +318,13 @@ def draw_hist(n_features, n_patterns, results):
                 if count == 0:
                     ax[i].set_title(f"x{i}")
                 if i == 0:
+                    min_, max_ = ax[i].get_xlim()
+                    text_pos = min_ - abs(max_ - min_) * 0.4
+
                     s = "operation: " + name + "\n"
                     s += "sink type: " + name2.split("_")[0] + "\n"
                     s += "shuffle residual: " + ("True" if len(name2.split("_")) == 2 else "False") + "\n"
-                    ax[i].text(-4.5, 0, s, ha="right", va="bottom")
+                    ax[i].text(text_pos, 0, s, ha="right", va="bottom")
                 if count == n_patterns - 1 and i == n_features - 1:
                     ax[i].legend(bbox_to_anchor=(1, -0.7), loc="center right")
             count += 1
@@ -370,7 +392,7 @@ def make_tables(results):
     
     return table_c, table_d
 
-def draw_pred_hist(n_patterns, results, sink_index):
+def _draw_pred_hist(n_patterns, results, sink_index, discrete_sink=False):
     n_cols = 3
     
     fig, axes = plt.subplots(n_patterns, n_cols, figsize=(n_cols*3, n_patterns*1.5))
@@ -385,6 +407,12 @@ def draw_pred_hist(n_patterns, results, sink_index):
             predicted = result2["predicted"]
             configs = result2["configs"]
 
+            is_discrete = name2.split("_")[0] != "continuous"
+            if discrete_sink and not is_discrete:
+                continue
+            elif not discrete_sink and is_discrete:
+                continue
+
             def _draw(ax, a, b, c):
                 range_ = min(*a, *b, *c), max(*a, *b, *c)
                 range_ = range_[0] - 0.1 * abs(range_[0]), range_[1] + 0.1 * abs(range_[0])
@@ -395,7 +423,7 @@ def draw_pred_hist(n_patterns, results, sink_index):
                 ax.bar(edges-width, hist, width=width, label="true", color="blue")
                 
                 hist, _ = np.histogram(b, range=range_)
-                ax.bar(edges, hist, width=width, label="linear regression", color="lime")
+                ax.bar(edges, hist, width=width, label="linear model", color="lime")
                 
                 hist, _ = np.histogram(c, range=range_)
                 ax.bar(edges+width, hist, width=width, label="random forest", color="tomato")
@@ -440,3 +468,7 @@ def draw_pred_hist(n_patterns, results, sink_index):
 
     plt.tight_layout()
     plt.show()
+
+def draw_pred_hist(n_patterns, results, sink_index):
+    _draw_pred_hist(n_patterns // 2, results, sink_index, discrete_sink=False)
+    _draw_pred_hist(n_patterns // 2, results, sink_index, discrete_sink=True)
