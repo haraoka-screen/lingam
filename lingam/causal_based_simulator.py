@@ -32,11 +32,10 @@ class CausalBasedSimulator:
         """
         Estimate functional relations between variables and variable
         distributions based on the training data ``X`` and the causal graph.
-        The functional relations represents by
-        sklearn.linear_model.LinearRegression if the object variable is
-        numeric, and represents by sklearn.linear_model.LogisticRegression
-        if the object variable is categorical by default. ``train_result_``
-        and ``residual_`` will be exposed after executing train().
+        The functional relations represents by linear regression model
+        if the object variable is numeric, and represents by logistic
+        regression model if the object variable is discrete by default.
+        ``train_result_`` will be exposed after executing train().
 
         Parameters
         ----------
@@ -50,7 +49,7 @@ class CausalBasedSimulator:
             Algorithm type.
 
         models : dict, default=None
-            Dictionary about models of variables. Models are cloned internaly
+            Dictionary about the model of a variable in X. Models are cloned internaly
             and are trained to infer functioal relations. Given instances of
             the model are cloned to estimate the functional relation between
             variables.
