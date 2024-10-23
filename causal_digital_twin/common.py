@@ -211,14 +211,14 @@ class CausalDigitalTwin:
                 # 評価
                 "y_true": X[:, sink_index],
             },
-            # 変化後のシミュレーションデータで訓練、変化後のシミュレーションデータで予測
+            # 変化後のシミュレーションデータで訓練、変化後のシミュレーションデータで予測。
             "simulation": {
                 "X_train": simulated.iloc[:, parent_indices2],
                 "y_train": simulated.iloc[:, sink_index],
                 "X_test": simulated.iloc[:, parent_indices2],
                 "y_true": X2[:, sink_index],
             },
-            # 変化前の真のデータで訓練、変化後の真のデータで予測。親変数は訓練時のものを使用する。
+            # 変化前の真のデータで訓練、変化後の真のデータで予測。予測時、親変数は訓練時のものを使用する。
             "before_after": {
                 "X_train": X[:, parent_indices],
                 "y_train": X[:, sink_index],
@@ -293,7 +293,7 @@ def discretize(X, sink_index):
     """ X[:, sink_index] を離散化する。 対象は常にシンクなので最後に適用すればよい。"""
     prob = expit(X[:, sink_index])
     mask = np.random.uniform(size=len(X))
-    X[:, sink_index] = prob > mask
+    X[:, sink_index] = prob >= mask
     return X
 
 def draw_hist(n_features, n_patterns, results):
