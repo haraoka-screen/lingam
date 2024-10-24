@@ -36,11 +36,23 @@ class CausalDigitalTwin:
 
         # 真のデータを元に因果探索を実行して因果グラフを推定する。
         if cd_algo_name == "DirectLiNGAM":
-            cd_model = DirectLiNGAM()
+            pk = np.zeros(causal_graph.shape) - 1
+            pk[:, sink_index] = 0
+            cd_model = DirectLiNGAM(prior_knowledge=pk)
         elif cd_algo_name == "BottomUpParceLiNGAM":
-            cd_model = BottomUpParceLiNGAM()
+            pk = np.zeros(causal_graph.shape) - 1
+            pk[:, sink_index] = 0
+
+            kwargs = {}
+            if is_discrete is not None and is_discrete[sink_index]:
+                kwargs["alpha"] = 0
+
+            cd_model = BottomUpParceLiNGAM(prior_knowledge=pk, **kwargs)
         elif cd_algo_name == "VARLiNGAM":
-            cd_model = VARLiNGAM()
+            pk = np.zeros(causal_graph[0].shape) - 1
+            pk[:, sink_index] = 0
+            lingam_model = DirectLiNGAM(prior_knowledge=pk)
+            cd_model = VARLiNGAM(lingam_model=lingam_model)
         else:
             raise ValueError("Unknown cd_algo_name")
 
@@ -109,15 +121,20 @@ class CausalDigitalTwin:
         causal_graph = check_array(self._causal_graph, ensure_2d=False, allow_nd=True)
         causal_graph2 = check_array(causal_graph, ensure_2d=False, allow_nd=True)
 
-        # 因果グラフの形状考慮
-        if len(causal_graph.shape) == 3:
-            index = (0, self._sink_index)
+        # 機械学習の説明変数は親変数か？全変数か？
+        if False:
+            # 因果グラフの形状考慮
+            if len(causal_graph.shape) == 3:
+                index = (0, self._sink_index)
+            else:
+                index = (self._sink_index,)
+            # 変化前のシンク変数の親
+            parent_indices = np.argwhere(~np.isclose(causal_graph[index], 0)).ravel()
+            # 変化後のシンク変数の親
+            parent_indices2 = np.argwhere(~np.isclose(causal_graph2[index], 0)).ravel()
         else:
-            index = (self._sink_index,)
-        # 変化前のシンク変数の親
-        parent_indices = np.argwhere(~np.isclose(causal_graph[index], 0)).ravel()
-        # 変化後のシンク変数の親
-        parent_indices2 = np.argwhere(~np.isclose(causal_graph2[index], 0)).ravel()
+            parent_indices = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
+            parent_indices2 = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
 
         evaluates, predicted, configs = self._evaluate(self._X, X2, simulated, self._sink_index, parent_indices, parent_indices2, ml_models, eval_funcs)
         
@@ -128,8 +145,11 @@ class CausalDigitalTwin:
             "evaluates": evaluates,
             "predicted": predicted,
             "configs": configs,
+            "parent_indices": parent_indices,
+            "parent_indices2": parent_indices2,
+            "est_adj": self._est_adj,
         }
-        
+
         return ret
     
     def _make_changing_models(self, causal_graph, causal_graph2):
@@ -210,6 +230,7 @@ class CausalDigitalTwin:
                 "X_test": X[:, parent_indices],
                 # 評価
                 "y_true": X[:, sink_index],
+                "parent": parent_indices,
             },
             # 変化後のシミュレーションデータで訓練、変化後のシミュレーションデータで予測。
             "simulation": {
@@ -217,6 +238,7 @@ class CausalDigitalTwin:
                 "y_train": simulated.iloc[:, sink_index],
                 "X_test": simulated.iloc[:, parent_indices2],
                 "y_true": X2[:, sink_index],
+                "parent": parent_indices2,
             },
             # 変化前の真のデータで訓練、変化後の真のデータで予測。予測時、親変数は訓練時のものを使用する。
             "before_after": {
@@ -224,6 +246,7 @@ class CausalDigitalTwin:
                 "y_train": X[:, sink_index],
                 "X_test": X2[:, parent_indices],
                 "y_true": X2[:, sink_index],
+                "parent": parent_indices,
             }
         }
         
@@ -237,11 +260,14 @@ class CausalDigitalTwin:
                 y_true = config["y_true"]
 
                 predicted[(config_name, ml_model_name)] = y_true, y_pred
-                
+
                 for eval_name, eval_func in eval_funcs.items():
                     # XXX: 時系列のシミュレートを行うとラグの分だけ縮んでしまう。
                     value = eval_func(y_true[:len(y_pred)], y_pred)
                     evaluated[(config_name, ml_model_name, eval_name)] = value
+
+                if ml_model_name == "lr":
+                    print(config_name, type(ml_model).__name__, "parent=", config["parent"], ", coef=", ml_model.coef_)
                     
         return evaluated, predicted, configs
 
@@ -371,7 +397,7 @@ def make_tables(results):
                 recall_sim = evaluates[("simulation", 'lr', 'recall')]
                 recall_est = evaluates[("before_after", 'lr', 'recall')]
                 table_d.append(
-                    (name, "LinearRegression", str(is_shuffle),
+                    (name, "LogisticRegression", str(is_shuffle),
                      f"{precision_true:.3f}", f"{precision_sim:.3f}", f"{precision_est:.3f}", f"{recall_true:.3f}", f"{recall_sim:.3f}", f"{recall_est:.3f}")
                 )
 
@@ -383,7 +409,7 @@ def make_tables(results):
                 recall_sim = evaluates[("simulation", 'rf', 'recall')]
                 recall_est = evaluates[("before_after", 'rf', 'recall')]
                 table_d.append(
-                    (name, "RandomForestRegressor", str(is_shuffle),
+                    (name, "RandomForestClassifier", str(is_shuffle),
                      f"{precision_true:.3f}", f"{precision_sim:.3f}", f"{precision_est:.3f}", f"{recall_true:.3f}", f"{recall_sim:.3f}", f"{recall_est:.3f}")
                 )
 
