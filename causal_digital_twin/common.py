@@ -97,12 +97,19 @@ class CausalDigitalTwin:
         evaluated
         """
         
+        # NaNはBottomUpParceLiNGAMのときのみ
+        causal_graph_org = check_array(self._causal_graph, ensure_2d=False, allow_nd=True, copy=True, force_all_finite="allow-nan")
+        causal_graph_org[np.isnan(causal_graph_org)] = 0
+
         if causal_graph is None:
             changing_models = None
         else:
+            causal_graph = check_array(causal_graph, ensure_2d=False, allow_nd=True, copy=True, force_all_finite="allow-nan")
+            causal_graph[np.isnan(causal_graph)] = 0
+
             # 真のDAGとユーザが真のDAGを見ながら更新したDAGの差分からchanging_modelsを作成する。
-            changing_models = self._make_changing_models(self._causal_graph.copy(), causal_graph.copy())
-        
+            changing_models = self._make_changing_models(causal_graph_org, causal_graph)
+
         if error is None:
             changing_exog = None
         else:
@@ -110,78 +117,58 @@ class CausalDigitalTwin:
         
         simulated = self._sim.run(changing_models=changing_models, changing_exog=changing_exog, shuffle_residual=shuffle_residual)
         
+        # 機械学習の準備
+
         if causal_graph is None:
-            causal_graph = self._causal_graph.copy()
+            causal_graph = causal_graph_org.copy()
         if error is None:
-            error = self._error
+            error = self._error.copy()
 
         # 変更後の真のデータ
         X2, _ = self._data_gen_func(causal_graph, error)
 
-        # NaNはBottomUpParceLiNGAMのときのみ
-        causal_graph = check_array(self._causal_graph, ensure_2d=False, allow_nd=True, copy=True, force_all_finite="allow-nan")
-        causal_graph2 = check_array(causal_graph, ensure_2d=False, allow_nd=True, copy=True, force_all_finite="allow-nan")
-        causal_graph[np.isnan(causal_graph)] = 0
-        causal_graph2[np.isnan(causal_graph2)] = 0
+        dag = causal_graph_org.copy()
+        X = self._X.copy()
+        n_features = causal_graph_org.shape[1]
 
-        if False:
-            # 説明変数は親変数のみ
+        # VARのときはDAGとデータを変形
+        if self._cd_algo_name == "VARLiNGAM":
+            # DAGの変形
+            def to_dag(causal_graph):
+                n_features = causal_graph.shape[1]
+                concated = np.zeros((n_features * len(causal_graph), n_features * len(causal_graph)))
+                concated[:n_features, :] = np.concatenate(causal_graph, axis=1)
+                return concated
 
-            # 因果グラフの形状考慮
-            if len(causal_graph.shape) == 3:
-                index = (0, self._sink_index)
-            else:
-                index = (self._sink_index,)
-            # 変化前のシンク変数の親
-            expl_indices = np.argwhere(~np.isclose(causal_graph[index], 0)).ravel()
-            # 変化後のシンク変数の親
-            expl_indices2 = np.argwhere(~np.isclose(causal_graph2[index], 0)).ravel()
-        elif False:
-            # 説明変数はシンク変数以外の場合
-            expl_indices = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
-            expl_indices2 = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
-        else:
-            dag = causal_graph.copy()
-            X = self._X.copy()
-            n_features = causal_graph.shape[1]
+            dag = to_dag(dag)
 
-            if self._cd_algo_name == "VARLiNGAM":
-                # DAGの変形
-                def to_dag(causal_graph):
-                    n_features = causal_graph.shape[1]
-                    concated = np.zeros((n_features * len(causal_graph), n_features * len(causal_graph)))
-                    concated[:n_features, :] = np.concatenate(causal_graph, axis=1)
-                    return concated
+            # データの変形
+            X_ = []
+            taus = self._causal_graph.shape[0]
+            for tau in range(taus):
+                for index in range(n_features):
+                    start = taus - tau - 1
+                    end = -(taus - start - 1) if tau != 0 else None
+                    data = X[start:end, index]
+                    X_.append(data)
+            X = np.array(X_).T
 
-                dag = to_dag(dag)
+            X2_ = []
+            taus = self._causal_graph.shape[0]
+            for tau in range(taus):
+                for index in range(n_features):
+                    start = taus - tau - 1
+                    end = -(taus - start - 1) if tau != 0 else None
+                    data = X2[start:end, index]
+                    X2_.append(data)
+            X2 = np.array(X2_).T
 
-                # データの変形
-                X_ = []
-                taus = self._causal_graph.shape[0]
-                for tau in range(taus):
-                    for index in range(n_features):
-                        start = taus - tau - 1
-                        end = -(taus - start - 1) if tau != 0 else None
-                        data = X[start:end, index]
-                        X_.append(data)
-                X = np.array(X_).T
+        # 説明変数は変化前の外生変数
+        expl_indices = np.argwhere(np.all(np.isclose(dag, 0), axis=1)).ravel()
+        expl_indices2 = expl_indices
 
-                X2_ = []
-                taus = self._causal_graph.shape[0]
-                for tau in range(taus):
-                    for index in range(n_features):
-                        start = taus - tau - 1
-                        end = -(taus - start - 1) if tau != 0 else None
-                        data = X2[start:end, index]
-                        X2_.append(data)
-                X2 = np.array(X2_).T
-
-            # 説明変数は変化前の外生変数
-            expl_indices = np.argwhere(np.all(np.isclose(dag, 0), axis=1)).ravel()
-            expl_indices2 = expl_indices
-
-            #print(X.shape, expl_indices)
-            #print(X2.shape, expl_indices2)
+        #print(X.shape, expl_indices)
+        #print(X2.shape, expl_indices2)
 
         evaluates, predicted, configs = self._evaluate(X, X2, simulated, self._sink_index, expl_indices, expl_indices2, ml_models, eval_funcs)
 
