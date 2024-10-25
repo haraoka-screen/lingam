@@ -178,6 +178,7 @@ def test_data_discrete():
 
 def test_cbs_success(test_data, test_data_unobs, test_data_ts, test_data_discrete):
     models = {"0": LinearRegression()}
+    models_d = {"0": LogisticRegression()}
     models_ts = {"0[t]": LinearRegression()}
     changing_models = {"0": {"parent_names": []}}
     changing_models_ts = {"0[t]": {"parent_names": []}}
@@ -210,7 +211,7 @@ def test_cbs_success(test_data, test_data_unobs, test_data_ts, test_data_discret
     # discrete
     X, causal_graph, _, is_discrete = test_data_discrete
     sim.train(X, causal_graph, is_discrete=is_discrete)
-    sim.train(X, causal_graph, is_discrete=is_discrete, models=models)
+    sim.train(X, causal_graph, is_discrete=is_discrete, models=models_d)
     sim.run()
     sim.run(changing_models=changing_models, changing_exog=changing_exog)
 

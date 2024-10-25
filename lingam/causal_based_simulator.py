@@ -13,7 +13,7 @@ from scipy.special import expit
 
 from sklearn.utils import check_array, check_scalar, check_random_state
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.base import RegressorMixin, ClassifierMixin, clone
+from sklearn.base import clone, is_regressor, is_classifier
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection._search import BaseSearchCV
 
@@ -157,30 +157,30 @@ class CausalBasedSimulator:
 
     def _check_model_instance(self, model, var_name, discrete_endog_names):
         if var_name not in discrete_endog_names:
-            model_type = RegressorMixin
+            check_model_type = is_regressor
         else:
-            model_type = ClassifierMixin
+            check_model_type = is_classifier
 
         if isinstance(model, Pipeline):
-            if not isinstance(model.steps[-1][-1], model_type):
+            if not check_model_type(model.steps[-1][-1]):
                 raise RuntimeError(
                     "The last step in Pipeline should be an "
                     + "instance of a regression/classification model."
                 )
         elif isinstance(model, BaseSearchCV):
-            if not isinstance(model.get_params()["estimator"], model_type):
+            if not check_model_type(model.get_params()["estimator"]):
                 raise RuntimeError(
                     "The type of the estimator shall be an "
                     + "instance of a regression/classification model."
                 )
         else:
-            if not isinstance(model, model_type):
+            if not check_model_type(model):
                 raise RuntimeError(
                     "The type of the estimator shall be an "
                     + "instance of a regression/classification model."
                 )
 
-        if model_type == ClassifierMixin:
+        if check_model_type == is_classifier:
             try:
                 func = getattr(model, "predict_proba")
                 if not callable(func):
@@ -201,7 +201,7 @@ class CausalBasedSimulator:
             if var_name not in endog_names:
                 raise RuntimeError(f"Unknown variable name ({var_name})")
 
-            self._check_model_instance(model, endog_names, discrete_endog_names)
+            self._check_model_instance(model, var_name, discrete_endog_names)
 
         return models
 
