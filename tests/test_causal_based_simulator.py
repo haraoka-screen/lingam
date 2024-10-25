@@ -235,6 +235,18 @@ def test_cbs_exception(test_data):
     else:
         raise AssertionError
 
+    # changing_models makes causal_graph cyclic
+    changing_models = {
+        "x3": { "parent_names": ["x0"] }
+    }
+    sim.train(X, causal_graph)
+    try:
+        sim.run(changing_models=changing_models)
+    except:
+        pass
+    else:
+        raise AssertionError
+
 def test_cbsi_lingam_success(test_data, test_data_discrete):
     X, causal_graph, is_correct_co = test_data
 

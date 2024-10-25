@@ -472,6 +472,8 @@ class CBSILiNGAM(CBSImpl):
         endog_names, discrete_endog_names = self._make_var_names(causal_graph, X, is_discrete)
 
         causal_order = self._calc_causal_order(causal_graph)
+        if causal_order is None:
+            raise ValueError("causal_graph must be acyclic.")
         causal_order = [endog_names[n] for n in causal_order]
 
         self._X = X_
@@ -536,13 +538,16 @@ class CBSILiNGAM(CBSImpl):
             causal_graph[row, cols] = 1
 
         causal_order = self._calc_causal_order(causal_graph)
+        if causal_order is None:
+            raise ValueError("causal_graph updated by changing_models is cyclic."
+                + "changing_models must be set so that causal graph does not cycle.")
         causal_order = [self._endog_names[n] for n in causal_order]
 
         return causal_order
 
     def _check_causal_graph(self, causal_graph, X):
         try:
-            causal_graph = check_array(causal_graph)
+            causal_graph = check_array(causal_graph, copy=True)
 
             n_features = X.shape[1]
             if causal_graph.shape != (n_features, n_features):
@@ -556,7 +561,7 @@ class CBSILiNGAM(CBSImpl):
         n_features = len(causal_graph)
 
         if isinstance(X, pd.DataFrame):
-            endog_names = check_array(X.columns, ensure_2d=False, dtype=None)
+            endog_names = check_array(X.columns, ensure_2d=False, dtype=None, copy=True)
             endog_names = [str(endog_name) for endog_name in endog_names]
         else:
             endog_names = [f"{i:d}" for i in range(n_features)]
@@ -611,7 +616,7 @@ class CBSIUnobsCommonCauseLiNGAM(CBSILiNGAM):
 
     def _check_causal_graph(self, causal_graph, X):
         try:
-            causal_graph = check_array(causal_graph, force_all_finite="allow-nan")
+            causal_graph = check_array(causal_graph, force_all_finite="allow-nan", copy=True)
 
             n_features = X.shape[1]
             if causal_graph.shape != (n_features, n_features):
@@ -651,7 +656,7 @@ class CBSITimeSeriesLiNGAM(CBSILiNGAM):
 
     def _check_causal_graph(self, causal_graph, X):
         try:
-            causal_graph = check_array(causal_graph, allow_nd=True)
+            causal_graph = check_array(causal_graph, allow_nd=True, copy=True)
             if len(causal_graph.shape) != 3:
                 raise ValueError("causal_graph must be 3 dimentional array.")
 

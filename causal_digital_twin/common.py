@@ -75,6 +75,7 @@ class CausalDigitalTwin:
         self._sink_index = sink_index
         self._is_discrete = is_discrete
         self._est_adj = est_adj
+        self._cd_algo_name = cd_algo_name
     
     def run(self, ml_models, eval_funcs, causal_graph=None, error=None, shuffle_residual=False):
         """
@@ -100,7 +101,7 @@ class CausalDigitalTwin:
             changing_models = None
         else:
             # 真のDAGとユーザが真のDAGを見ながら更新したDAGの差分からchanging_modelsを作成する。
-            changing_models = self._make_changing_models(self._causal_graph, causal_graph)
+            changing_models = self._make_changing_models(self._causal_graph.copy(), causal_graph.copy())
         
         if error is None:
             changing_exog = None
@@ -110,7 +111,7 @@ class CausalDigitalTwin:
         simulated = self._sim.run(changing_models=changing_models, changing_exog=changing_exog, shuffle_residual=shuffle_residual)
         
         if causal_graph is None:
-            causal_graph = self._causal_graph
+            causal_graph = self._causal_graph.copy()
         if error is None:
             error = self._error
 
@@ -118,26 +119,72 @@ class CausalDigitalTwin:
         X2, _ = self._data_gen_func(causal_graph, error)
 
         # NaNはBottomUpParceLiNGAMのときのみ
-        causal_graph = check_array(self._causal_graph, ensure_2d=False, allow_nd=True)
-        causal_graph2 = check_array(causal_graph, ensure_2d=False, allow_nd=True)
+        causal_graph = check_array(self._causal_graph, ensure_2d=False, allow_nd=True, copy=True, force_all_finite="allow-nan")
+        causal_graph2 = check_array(causal_graph, ensure_2d=False, allow_nd=True, copy=True, force_all_finite="allow-nan")
+        causal_graph[np.isnan(causal_graph)] = 0
+        causal_graph2[np.isnan(causal_graph2)] = 0
 
-        # 機械学習の説明変数は親変数か？全変数か？
         if False:
+            # 説明変数は親変数のみ
+
             # 因果グラフの形状考慮
             if len(causal_graph.shape) == 3:
                 index = (0, self._sink_index)
             else:
                 index = (self._sink_index,)
             # 変化前のシンク変数の親
-            parent_indices = np.argwhere(~np.isclose(causal_graph[index], 0)).ravel()
+            expl_indices = np.argwhere(~np.isclose(causal_graph[index], 0)).ravel()
             # 変化後のシンク変数の親
-            parent_indices2 = np.argwhere(~np.isclose(causal_graph2[index], 0)).ravel()
+            expl_indices2 = np.argwhere(~np.isclose(causal_graph2[index], 0)).ravel()
+        elif False:
+            # 説明変数はシンク変数以外の場合
+            expl_indices = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
+            expl_indices2 = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
         else:
-            parent_indices = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
-            parent_indices2 = np.delete(np.arange(self._causal_graph.shape[-1]), self._sink_index)
+            dag = causal_graph.copy()
+            X = self._X.copy()
+            n_features = causal_graph.shape[1]
 
-        evaluates, predicted, configs = self._evaluate(self._X, X2, simulated, self._sink_index, parent_indices, parent_indices2, ml_models, eval_funcs)
-        
+            if self._cd_algo_name == "VARLiNGAM":
+                # DAGの変形
+                def to_dag(causal_graph):
+                    n_features = causal_graph.shape[1]
+                    concated = np.zeros((n_features * len(causal_graph), n_features * len(causal_graph)))
+                    concated[:n_features, :] = np.concatenate(causal_graph, axis=1)
+                    return concated
+
+                dag = to_dag(dag)
+
+                # データの変形
+                X_ = []
+                taus = self._causal_graph.shape[0]
+                for tau in range(taus):
+                    for index in range(n_features):
+                        start = taus - tau - 1
+                        end = -(taus - start - 1) if tau != 0 else None
+                        data = X[start:end, index]
+                        X_.append(data)
+                X = np.array(X_).T
+
+                X2_ = []
+                taus = self._causal_graph.shape[0]
+                for tau in range(taus):
+                    for index in range(n_features):
+                        start = taus - tau - 1
+                        end = -(taus - start - 1) if tau != 0 else None
+                        data = X2[start:end, index]
+                        X2_.append(data)
+                X2 = np.array(X2_).T
+
+            # 説明変数は変化前の外生変数
+            expl_indices = np.argwhere(np.all(np.isclose(dag, 0), axis=1)).ravel()
+            expl_indices2 = expl_indices
+
+            #print(X.shape, expl_indices)
+            #print(X2.shape, expl_indices2)
+
+        evaluates, predicted, configs = self._evaluate(X, X2, simulated, self._sink_index, expl_indices, expl_indices2, ml_models, eval_funcs)
+
         ret = {
             "X": self._X,
             "X2": X2,
@@ -145,9 +192,9 @@ class CausalDigitalTwin:
             "evaluates": evaluates,
             "predicted": predicted,
             "configs": configs,
-            "parent_indices": parent_indices,
-            "parent_indices2": parent_indices2,
-            "est_adj": self._est_adj,
+            "expl_indices": expl_indices,
+            "expl_indices2": expl_indices2,
+            "est_adj": self._est_adj.copy(),
         }
 
         return ret
@@ -196,7 +243,7 @@ class CausalDigitalTwin:
         
         return changing_models
     
-    def _evaluate(self, X, X2, simulated, sink_index, parent_indices, parent_indices2, ml_models, eval_funcs):    
+    def _evaluate(self, X, X2, simulated, sink_index, expl_indices, expl_indices2, ml_models, eval_funcs):    
         """
         X
             変化前の真のデータ
@@ -214,42 +261,53 @@ class CausalDigitalTwin:
             評価関数も回帰モデル用のもののみとする必要がある。
             分類モデルのみであれば分類モデル用の評価関数のみとする必要がある。
             評価関数にはscikit-learnの評価関数を使用すること。
-        parent_indices
-            変化前シンク変数の親変数のインデックス
-        parent_indices2
-            変化後シンク変数の親変数のインデックス
+        expl_indices
+            変化前シンク変数を予測するための説明変数
+        expl_indices2
+            変化後シンク変数を予測するための説明変数
         """
         # シンク変数を予測する機械学習の訓練の設定
         configs = {
-            # 変化前の真のデータで訓練、変化前真データで予測
+            ## 変化前の真のデータで訓練、変化前真データで予測
+            #"before": {
+            #    # 訓練
+            #    "X_train": X[:, expl_indices],
+            #    "y_train": X[:, sink_index],
+            #    # 予測
+            #    "X_test": X[:, expl_indices],
+            #    # 評価
+            #    "y_true": X[:, sink_index],
+            #    "X_names": expl_indices,
+            #},
+            # 変化後真データで訓練、変化後真データで予測。上の変化前の設定名を引き継いだのでbeforeのまま。
             "before": {
                 # 訓練
-                "X_train": X[:, parent_indices],
-                "y_train": X[:, sink_index],
+                "X_train": X2[:, expl_indices2],
+                "y_train": X2[:, sink_index],
                 # 予測
-                "X_test": X[:, parent_indices],
+                "X_test": X2[:, expl_indices2],
                 # 評価
-                "y_true": X[:, sink_index],
-                "parent": parent_indices,
+                "y_true": X2[:, sink_index],
+                "X_names": expl_indices2,
             },
             # 変化後のシミュレーションデータで訓練、変化後のシミュレーションデータで予測。
             "simulation": {
-                "X_train": simulated.iloc[:, parent_indices2],
+                "X_train": simulated.iloc[:, expl_indices2],
                 "y_train": simulated.iloc[:, sink_index],
-                "X_test": simulated.iloc[:, parent_indices2],
+                "X_test": simulated.iloc[:, expl_indices2],
                 "y_true": X2[:, sink_index],
-                "parent": parent_indices2,
+                "X_names": expl_indices2,
             },
             # 変化前の真のデータで訓練、変化後の真のデータで予測。予測時、親変数は訓練時のものを使用する。
             "before_after": {
-                "X_train": X[:, parent_indices],
+                "X_train": X[:, expl_indices],
                 "y_train": X[:, sink_index],
-                "X_test": X2[:, parent_indices],
+                "X_test": X2[:, expl_indices],
                 "y_true": X2[:, sink_index],
-                "parent": parent_indices,
+                "X_names": expl_indices,
             }
         }
-        
+
         evaluated = {}
         predicted = {}
         for config_name, config in configs.items():
@@ -267,7 +325,7 @@ class CausalDigitalTwin:
                     evaluated[(config_name, ml_model_name, eval_name)] = value
 
                 if ml_model_name == "lr":
-                    print(config_name, type(ml_model).__name__, "parent=", config["parent"], ", coef=", ml_model.coef_)
+                    print(config_name, type(ml_model).__name__, "X_names=", config["X_names"], ", coef=", ml_model.coef_)
                     
         return evaluated, predicted, configs
 
