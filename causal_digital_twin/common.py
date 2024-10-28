@@ -32,7 +32,7 @@ class CausalDigitalTwin:
             DirectLiNGAM、BottomUpParceLinNGAM、VARLiNGAMのいずれかを指定する。
         """
         # 変更前の真のデータ
-        X, error = data_gen_func(causal_graph, error)
+        X, _ = data_gen_func(causal_graph, error)
 
         # 真のデータを元に因果探索を実行して因果グラフを推定する。
         if cd_algo_name == "DirectLiNGAM":
@@ -113,6 +113,7 @@ class CausalDigitalTwin:
         if error is None:
             changing_exog = None
         else:
+            error = error.copy()
             changing_exog = {i: error[:, i].ravel() for i in range(error.shape[1])}
         
         simulated = self._sim.run(changing_models=changing_models, changing_exog=changing_exog, shuffle_residual=shuffle_residual)
@@ -360,9 +361,10 @@ def generate_test_data(causal_graph, causal_order, ratio_list, size=1000):
     
     return X.T, causal_graph, e.T
 
-def discretize(X, sink_index):
+def discretize(X, error, sink_index):
     """ X[:, sink_index] を離散化する。 対象は常にシンクなので最後に適用すればよい。"""
-    prob = expit(X[:, sink_index])
+    # Xは誤差項が足されている状態なので、誤差項を抜いた上でexpitに入れる。。
+    prob = expit(X[:, sink_index] - error[:, sink_index])
     mask = np.random.uniform(size=len(X))
     X[:, sink_index] = prob >= mask
     return X
