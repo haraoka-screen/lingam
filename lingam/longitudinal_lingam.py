@@ -25,7 +25,7 @@ class LongitudinalLiNGAM:
        Workshop on Machine Learning for Signal Processing (MLSP2013), pp. 1--6, Southampton, United Kingdom, 2013.
     """
 
-    def __init__(self, n_lags=1, measure="pwling", random_state=None):
+    def __init__(self, n_lags=1, measure="pwling", prior_knowledge=None, random_state=None):
         """Construct a model.
 
         Parameters
@@ -34,6 +34,15 @@ class LongitudinalLiNGAM:
             Number of lags.
         measure : {'pwling', 'kernel'}, default='pwling'
             Measure to evaluate independence : 'pwling' or 'kernel'.
+        prior_knowledge : list, shape [(n_features, n_features), ...], optional (default=None)
+            Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
+
+            The elements of prior knowledge matrix are defined as follows [1]_:
+
+            * ``0`` : :math:`x_i` does not have a directed path to :math:`x_j`
+            * ``1`` : :math:`x_i` has a directed path to :math:`x_j`
+            * ``-1`` : No prior knowledge is available to know if either of the two cases above (0 or 1) is true.
+ 
         random_state : int, optional (default=None)
             ``random_state`` is the seed used by the random number generator.
         """
@@ -42,6 +51,11 @@ class LongitudinalLiNGAM:
         self._random_state = random_state
         self._causal_orders = None
         self._adjacency_matrices = None
+        self._Aknw = prior_knowledge
+
+        if self._Aknw is not None:
+            self._Aknw = check_array(self._Aknw, ensure_2d=False)
+            self._Aknw = np.where(self._Aknw < 0, np.nan, self._Aknw)
 
     def fit(self, X_list):
         """Fit the model to datasets.
@@ -65,6 +79,12 @@ class LongitudinalLiNGAM:
         if len(X_list) < 2:
             raise ValueError("X_list must be a list containing at least two items")
 
+        if self._Aknw is not None:
+            if len(self._Aknw) != 3 or (n_features, n_features) != self._Aknw.shape[1:]:
+                raise ValueError(
+                    "The shape of an elements of prior knowledge must be (n_features, n_features)"
+                )
+ 
         self._T = len(X_list)
         self._n = check_array(X_list[0]).shape[0]
         self._p = check_array(X_list[0]).shape[1]
@@ -312,26 +332,40 @@ class LongitudinalLiNGAM:
         N_t = np.zeros((self._T, self._p, self._n))
         N_t[:, :, :] = np.nan
 
+        X_t = np.array(X_t)
+        if self._Aknw is not None:
+            aknw = np.array(self._Aknw)
+        else:
+            aknw = None
+
         for t in range(1, self._T):
             # predictors
-            X_predictors = np.zeros((self._n, self._p * (1 + self._n_lags)))
-            for tau in range(self._n_lags):
-                pos = self._p * tau
-                X_predictors[:, pos : pos + self._p] = X_t[t - (tau + 1)].T
+            X_predictors = np.vstack(X_t[t - 1:t - self._n_lags + 1])
 
             # estimate M(t,t-τ) by regression
             X_target = X_t[t].T
             for i in range(self._p):
+                # apply a given prior knowledge
+                predictors = np.arange(len(X_predictors))
+                if aknw is not None:
+                    predictors = np.hstack(aknw[t, 1:, i, :])
+
+                X = X_predictors[predictors]
+                y = X_t[t, i]
+
                 reg = LinearRegression()
-                reg.fit(X_predictors, X_target[:, i])
-                for tau in range(self._n_lags):
-                    pos = self._p * tau
-                    M_tau[t, tau, i] = reg.coef_[pos : pos + self._p]
+                reg.fit(X.T, y)
+
+                M_tau[t, :, i] = reg.coef_
 
             # Compute N(t)
-            N_t[t] = X_t[t]
-            for tau in range(self._n_lags):
-                N_t[t] = N_t[t] - np.dot(M_tau[t, tau], X_t[t - (tau + 1)])
+            if False:
+                # old
+                N_t[t] = X_t[t]
+                for tau in range(self._n_lags):
+                    N_t[t] = N_t[t] - np.dot(M_tau[t, tau], X_t[t - (tau + 1)])
+            else:
+                N_t[t] = X_t[t] - np.dot(np.hstack(M_tau[t]), np.vstack(X_t[t - 1:t - self._n_lags + 1]))
 
         return M_tau, N_t
 
@@ -340,7 +374,8 @@ class LongitudinalLiNGAM:
         causal_orders = [[np.nan] * self._p]
         B_t = np.zeros((self._T, self._p, self._p))
         for t in range(1, self._T):
-            model = DirectLiNGAM(measure=self._measure)
+            pk = self._Aknw[t, t] if self._Aknw is not None else None
+            model = DirectLiNGAM(measure=self._measure, prior_knowledge=pk)
             model.fit(N_t[t].T)
             causal_orders.append(model.causal_order_)
             B_t[t] = model.adjacency_matrix_
