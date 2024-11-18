@@ -333,39 +333,23 @@ class LongitudinalLiNGAM:
         N_t[:, :, :] = np.nan
 
         X_t = np.array(X_t)
-        if self._Aknw is not None:
-            aknw = np.array(self._Aknw)
-        else:
-            aknw = None
 
-        for t in range(1, self._T):
-            # predictors
-            X_predictors = np.vstack(X_t[t - 1:t - self._n_lags + 1])
-
-            # estimate M(t,t-τ) by regression
-            X_target = X_t[t].T
-            for i in range(self._p):
-                # apply a given prior knowledge
-                predictors = np.arange(len(X_predictors))
-                if aknw is not None:
-                    predictors = np.hstack(aknw[t, 1:, i, :])
-
-                X = X_predictors[predictors]
-                y = X_t[t, i]
-
-                reg = LinearRegression()
-                reg.fit(X.T, y)
-
-                M_tau[t, :, i] = reg.coef_
-
-            # Compute N(t)
-            if False:
-                # old
+        for t in range(0, self._T):
+            if t == 0:
                 N_t[t] = X_t[t]
-                for tau in range(self._n_lags):
-                    N_t[t] = N_t[t] - np.dot(M_tau[t, tau], X_t[t - (tau + 1)])
-            else:
-                N_t[t] = X_t[t] - np.dot(np.hstack(M_tau[t]), np.vstack(X_t[t - 1:t - self._n_lags + 1]))
+                M_tau[t] = 0
+                continue
+
+            time_len = min(t, self._n_lags)
+
+            X = np.vstack(X_t[t - time_len:t])
+            y = X_t[t]
+
+            reg = LinearRegression()
+            reg.fit(X.T, y.T)
+
+            M_tau[t, :time_len] = reg.coef_
+            N_t[t] = X_t[t] - reg.coef_ @ X
 
         return M_tau, N_t
 
