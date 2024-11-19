@@ -348,7 +348,7 @@ class LongitudinalLiNGAM:
             reg = LinearRegression()
             reg.fit(X.T, y.T)
 
-            M_tau[t, :time_len] = reg.coef_
+            M_tau[t, :time_len] = np.split(reg.coef_, time_len, axis=1)
             N_t[t] = X_t[t] - reg.coef_ @ X
 
         return M_tau, N_t
