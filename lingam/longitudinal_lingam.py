@@ -53,11 +53,11 @@ class LongitudinalLiNGAM:
         self._adjacency_matrices = None
 
         if self._Aknw is not None:
-            self._Aknw = check_array(self._Aknw, ensure_2d=False)
+            self._Aknw = check_array(self._Aknw, ensure_2d=False, allow_nd=True)
             if len(self._Aknw.shape) != 3:
                 raise ValueError("prior_knowledge must be 3D.")
 
-            self._Aknw = np.where(self._Aknw < 0, np.nan, self._Aknw)
+            #self._Aknw = np.where(self._Aknw < 0, np.nan, self._Aknw)
 
     def fit(self, X_list):
         """Fit the model to datasets.
@@ -113,7 +113,7 @@ class LongitudinalLiNGAM:
             self._causal_orders = causal_orders
         else:
             # XXX: いったんラグエフェクトには事前知識を適用しない方向で考える。
-            if (self._T, n_features, n_features) != self._Aknw.shape:
+            if (self._T, self._p, self._p) != self._Aknw.shape:
                 raise ValueError(
                     "The shape of prior knowledge must be (T, n_features, n_features)"
                 )
@@ -127,13 +127,13 @@ class LongitudinalLiNGAM:
                 reg = LinearRegression()
                 reg.fit(X.T, y.T)
 
-                X_t[t] = X_t[t] - reg.predict(X).T
+                X_t[t] = X_t[t] - reg.predict(X.T).T
                 B_tau.append(reg.coef_)
 
             # instanteneous adj matrix
             B_t = []
             for t in range(self._n_lags, self._T):
-                pk = self.Aknw[t]
+                pk = self._Aknw[t]
                 model = DirectLiNGAM(prior_knowledge=pk)
                 model.fit(X_t[t].T)
                 B_t.append(model.adjacency_matrix_)
@@ -144,7 +144,7 @@ class LongitudinalLiNGAM:
             )
 
             self._adjacency_matrices[self._n_lags:, 0] = B_t
-            self._adjacency_matrices[self._n_lags:, 1:] = B_tau
+            self._adjacency_matrices[self._n_lags:, 1:] = np.split(np.array(B_tau), self._n_lags, axis=2)
 
         return self
 
