@@ -25,23 +25,39 @@ class LongitudinalLiNGAM:
        Workshop on Machine Learning for Signal Processing (MLSP2013), pp. 1--6, Southampton, United Kingdom, 2013.
     """
 
-    def __init__(self, n_lags=1, measure="pwling", random_state=None):
+    def __init__(self, n_lags=1, prior_knowledge=None, measure="pwling", random_state=None):
         """Construct a model.
 
         Parameters
         ----------
         n_lags : int, optional (default=1)
             Number of lags.
+        prior_knowledge : array-like, shape (T, n_features, n_features), optional (default=None)
+            Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
+
+            The elements of prior knowledge matrix are defined as follows [1]_:
+
+            * ``0`` : :math:`x_i` does not have a directed path to :math:`x_j`
+            * ``1`` : :math:`x_i` has a directed path to :math:`x_j`
+            * ``-1`` : No prior knowledge is available to know if either of the two cases above (0 or 1) is true.
         measure : {'pwling', 'kernel'}, default='pwling'
             Measure to evaluate independence : 'pwling' or 'kernel'.
         random_state : int, optional (default=None)
             ``random_state`` is the seed used by the random number generator.
         """
         self._n_lags = n_lags
+        self._Aknw = prior_knowledge
         self._measure = measure
         self._random_state = random_state
         self._causal_orders = None
         self._adjacency_matrices = None
+
+        if self._Aknw is not None:
+            self._Aknw = check_array(self._Aknw, ensure_2d=False)
+            if len(self._Aknw.shape) != 3:
+                raise ValueError("prior_knowledge must be 3D.")
+
+            self._Aknw = np.where(self._Aknw < 0, np.nan, self._Aknw)
 
     def fit(self, X_list):
         """Fit the model to datasets.
@@ -75,25 +91,61 @@ class LongitudinalLiNGAM:
                 raise ValueError("X_list must be a list with the same shape")
             X_t.append(X.T)
 
-        M_tau, N_t = self._compute_residuals(X_t)
-        B_t, causal_orders = self._estimate_instantaneous_effects(N_t)
-        B_tau = self._estimate_lagged_effects(B_t, M_tau)
+        if self._Aknw is None:
+            M_tau, N_t = self._compute_residuals(X_t)
+            B_t, causal_orders = self._estimate_instantaneous_effects(N_t)
+            B_tau = self._estimate_lagged_effects(B_t, M_tau)
 
-        # output B(t,t), B(t,t-τ)
-        self._adjacency_matrices = np.empty(
-            (self._T, 1 + self._n_lags, self._p, self._p)
-        )
-        self._adjacency_matrices[:, :] = np.nan
-        for t in range(self._n_lags, self._T):
-            self._adjacency_matrices[t, 0] = B_t[t]
-            for l in range(self._n_lags):
-                if t - l != 0:
-                    self._adjacency_matrices[t, l + 1] = B_tau[t, l]
+            # output B(t,t), B(t,t-τ)
+            self._adjacency_matrices = np.empty(
+                (self._T, 1 + self._n_lags, self._p, self._p)
+            )
+            self._adjacency_matrices[:, :] = np.nan
+            for t in range(self._n_lags, self._T):
+                self._adjacency_matrices[t, 0] = B_t[t]
+                for l in range(self._n_lags):
+                    if t - l != 0:
+                        self._adjacency_matrices[t, l + 1] = B_tau[t, l]
 
-        self._residuals = np.zeros((self._T, self._n, self._p))
-        for t in range(self._T):
-            self._residuals[t] = N_t[t].T
-        self._causal_orders = causal_orders
+            self._residuals = np.zeros((self._T, self._n, self._p))
+            for t in range(self._T):
+                self._residuals[t] = N_t[t].T
+            self._causal_orders = causal_orders
+        else:
+            # XXX: いったんラグエフェクトには事前知識を適用しない方向で考える。
+            if (self._T, n_features, n_features) != self._Aknw.shape:
+                raise ValueError(
+                    "The shape of prior knowledge must be (T, n_features, n_features)"
+                )
+
+            # remove effects from past data and record coefficients.
+            B_tau = []
+            for t in range(self._n_lags, self._T):
+                X = np.vstack(X_t[t - self._n_lags:t])
+                y = X_t[t]
+
+                reg = LinearRegression()
+                reg.fit(X.T, y.T)
+
+                X_t[t] = X_t[t] - reg.predict(X).T
+                B_tau.append(reg.coef_)
+
+            # instanteneous adj matrix
+            B_t = []
+            for t in range(self._n_lags, self._T):
+                pk = self.Aknw[t]
+                model = DirectLiNGAM(prior_knowledge=pk)
+                model.fit(X_t[t].T)
+                B_t.append(model.adjacency_matrix_)
+
+            # result
+            self._adjacency_matrices = np.empty(
+                (self._T, 1 + self._n_lags, self._p, self._p)
+            )
+
+            self._adjacency_matrices[self._n_lags:, 0] = B_t
+            self._adjacency_matrices[self._n_lags:, 1:] = B_tau
+
         return self
 
     def bootstrap(self, X_list, n_sampling, start_from_t=1):
