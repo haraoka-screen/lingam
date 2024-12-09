@@ -32,7 +32,7 @@ class LongitudinalLiNGAM:
         ----------
         n_lags : int, optional (default=1)
             Number of lags.
-        prior_knowledge : array-like, shape (T, n_features, n_features), optional (default=None)
+        prior_knowledge : array-like, shape (T, n_lags + 1, n_features, n_features), optional (default=None)
             Prior knowledge used for causal discovery, where ``n_features`` is the number of features.
 
             The elements of prior knowledge matrix are defined as follows [1]_:
@@ -54,8 +54,8 @@ class LongitudinalLiNGAM:
 
         if self._Aknw is not None:
             self._Aknw = check_array(self._Aknw, ensure_2d=False, allow_nd=True)
-            if len(self._Aknw.shape) != 3:
-                raise ValueError("prior_knowledge must be 3D.")
+            if len(self._Aknw.shape) != 4:
+                raise ValueError("prior_knowledge must be 4D.")
 
             #self._Aknw = np.where(self._Aknw < 0, np.nan, self._Aknw)
 
@@ -112,40 +112,51 @@ class LongitudinalLiNGAM:
                 self._residuals[t] = N_t[t].T
             self._causal_orders = causal_orders
         else:
-            # XXX: いったんラグエフェクトには事前知識を適用しない方向で考える。
-            if (self._T, self._p, self._p) != self._Aknw.shape:
+            if (self._T, self._n_lags + 1, self._p, self._p) != self._Aknw.shape:
                 raise ValueError(
-                    "The shape of prior knowledge must be (T, n_features, n_features)"
+                    "The shape of prior knowledge must be (T, n_lags + 1, n_features, n_features)"
                 )
 
-            # remove effects from past data and record coefficients.
-            B_tau = []
-            for t in range(self._n_lags, self._T):
-                X = np.vstack(X_t[t - self._n_lags:t])
-                y = X_t[t]
+            # 全時刻のデータを持ち込む必要がある。ラグの効果を計算するため。
+            X_t = np.vstack(X_t).T
 
-                reg = LinearRegression()
-                reg.fit(X.T, y.T)
+            # 過去から未来への効果を持たないようにする。時刻tにおいて時刻t以前からのみの効果を受ける。
+            pk = []
+            for t in range(self._T):
+                pk_row = []
+                for t_lag in range(self._T):
+                    if t < t_lag:
+                        pk_ = np.zeros((self._p, self._p))
+                    else:
+                        pk_ = np.ones((self._p, self._p)) * -1
+                    pk_row.append(pk_)
+                pk.append(np.hstack(pk_row))
+            pk = np.vstack(pk)
+            print("pk")
+            print(pk)
 
-                X_t[t] = X_t[t] - reg.predict(X.T).T
-                B_tau.append(reg.coef_)
+            # 全時刻の全変数で因果探索
+            model = DirectLiNGAM(prior_knowledge=pk)
+            model.fit(X_t)
 
-            # instanteneous adj matrix
-            B_t = []
-            for t in range(self._n_lags, self._T):
-                pk = self._Aknw[t]
-                model = DirectLiNGAM(prior_knowledge=pk)
-                model.fit(X_t[t].T)
-                B_t.append(model.adjacency_matrix_)
+            # 大きなひとつの隣接行列を、観測期間Tで分割していく。(T, T, p, p)になる。
+            adj = np.split(model.adjacency_matrix_, self._T)
+            adj = np.array([np.split(adj_, self._T, axis=1) for adj_ in adj])
 
-            # result
-            self._adjacency_matrices = np.empty(
-                (self._T, 1 + self._n_lags, self._p, self._p)
-            )
+            print("adj(isn't zero)")
+            print(np.hstack(np.hstack(adj)).astype(bool).astype(int))
 
-            self._adjacency_matrices[self._n_lags:, 0] = B_t
-            self._adjacency_matrices[self._n_lags:, 1:] = np.split(np.array(B_tau), self._n_lags, axis=2)
+            adjs = np.zeros((self._T, self._n_lags + 1, self._p, self._p))
+            for t in range(self._T):
+                if t < self._n_lags:
+                    # ラグの効果を計算しようがない範囲はゼロのまま
+                    continue
 
+                for lag in range(self._n_lags + 1):
+                    adjs[t, lag] = adj[t, t - lag]
+            adjs = np.array(adjs)
+
+            self._adjacency_matrices = adjs
         return self
 
     def bootstrap(self, X_list, n_sampling, start_from_t=1):
