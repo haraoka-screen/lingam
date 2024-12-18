@@ -117,46 +117,64 @@ class LongitudinalLiNGAM:
                     "The shape of prior knowledge must be (T, n_lags + 1, n_features, n_features)"
                 )
 
-            # 全時刻のデータを持ち込む必要がある。ラグの効果を計算するため。
-            X_t = np.vstack(X_t).T
+            X_t = np.vstack(X_t)
 
-            # 過去から未来への効果を持たないようにする。時刻tにおいて時刻t以前からのみの効果を受ける。
-            pk = []
+            # estimate only instantaneous and lag effects
+            pk = np.zeros((self._T * self._p, self._T * self._p))
             for t in range(self._T):
-                pk_row = []
-                for t_lag in range(self._T):
-                    if t < t_lag:
-                        pk_ = np.zeros((self._p, self._p))
-                    else:
-                        pk_ = np.ones((self._p, self._p)) * -1
-                    pk_row.append(pk_)
-                pk.append(np.hstack(pk_row))
-            pk = np.vstack(pk)
-            print("pk")
-            print(pk)
+                end = (t + 1) * self._p
+                start = max(end - self._p * (self._n_lags + 1), 0)
+                pk[t * self._p : (t + 1) * self._p, start : end] = -1
 
-            # 全時刻の全変数で因果探索
+            # apply the given prior knowledge
+            for t in range(self._T):
+                for tau in range(self._n_lags + 1):
+                    if t < tau:
+                        continue
+
+                    ix = np.ix_(
+                        np.arange(t * self._p, (t + 1) * self._p),
+                        np.arange((t - tau) * self._p, (t - tau + 1) * self._p)
+                    )
+
+                    temp = pk[ix]
+                    temp[self._Aknw[t, tau] == 0] = 0
+                    temp[self._Aknw[t, tau] == 1] = 1
+                    pk[ix] = temp
+
             model = DirectLiNGAM(prior_knowledge=pk)
-            model.fit(X_t)
+            model.fit(X_t.T)
 
-            # 大きなひとつの隣接行列を、観測期間Tで分割していく。(T, T, p, p)になる。
-            adj = np.split(model.adjacency_matrix_, self._T)
-            adj = np.array([np.split(adj_, self._T, axis=1) for adj_ in adj])
+            # split the estimated adjacency matrix
+            adj = np.array(np.split(model.adjacency_matrix_, self._T, axis=1))
+            adj = np.array(np.split(adj, self._T, axis=1))
 
-            print("adj(isn't zero)")
-            print(np.hstack(np.hstack(adj)).astype(bool).astype(int))
-
+            # construct output matrices
             adjs = np.zeros((self._T, self._n_lags + 1, self._p, self._p))
-            for t in range(self._T):
-                if t < self._n_lags:
-                    # ラグの効果を計算しようがない範囲はゼロのまま
-                    continue
-
+            for t in range(self._n_lags, self._T):
                 for lag in range(self._n_lags + 1):
                     adjs[t, lag] = adj[t, t - lag]
-            adjs = np.array(adjs)
+            adjs[:self._n_lags] = np.nan
+            adjs[:, 1:] = adjs[:, 1:][:, ::-1]
 
             self._adjacency_matrices = adjs
+
+            # make causal_orders
+            causal_orders = []
+            for i in range(self._T):
+                if i < self._n_lags:
+                    causal_orders.append([np.nan for _ in range(self._p)])
+                    continue
+
+                filter_ = list(map(
+                    lambda x: x in range(i * self._p, (i + 1) * self._p),
+                    model.causal_order_
+                ))
+                causal_order = np.array(model.causal_order_)[filter_]
+                causal_order = causal_order - min(causal_order)
+                causal_orders.append(causal_order.tolist())
+            self._causal_orders = causal_orders
+
         return self
 
     def bootstrap(self, X_list, n_sampling, start_from_t=1):
