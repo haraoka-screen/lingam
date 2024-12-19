@@ -91,6 +91,8 @@ class LongitudinalLiNGAM:
                 raise ValueError("X_list must be a list with the same shape")
             X_t.append(X.T)
 
+        n_taus = self._n_lags + 1
+
         if self._Aknw is None:
             M_tau, N_t = self._compute_residuals(X_t)
             B_t, causal_orders = self._estimate_instantaneous_effects(N_t)
@@ -98,7 +100,7 @@ class LongitudinalLiNGAM:
 
             # output B(t,t), B(t,t-τ)
             self._adjacency_matrices = np.empty(
-                (self._T, 1 + self._n_lags, self._p, self._p)
+                (self._T, n_taus, self._p, self._p)
             )
             self._adjacency_matrices[:, :] = np.nan
             for t in range(self._n_lags, self._T):
@@ -112,7 +114,7 @@ class LongitudinalLiNGAM:
                 self._residuals[t] = N_t[t].T
             self._causal_orders = causal_orders
         else:
-            if (self._T, self._n_lags + 1, self._p, self._p) != self._Aknw.shape:
+            if (self._T, n_taus, self._p, self._p) != self._Aknw.shape:
                 raise ValueError(
                     "The shape of prior knowledge must be (T, n_lags + 1, n_features, n_features)"
                 )
@@ -122,19 +124,28 @@ class LongitudinalLiNGAM:
             # estimate only instantaneous and lag effects
             pk = np.zeros((self._T * self._p, self._T * self._p))
             for t in range(self._T):
-                end = (t + 1) * self._p
-                start = max(end - self._p * (self._n_lags + 1), 0)
-                pk[t * self._p : (t + 1) * self._p, start : end] = -1
+                col_end = (t + 1) * self._p
+                col_start = max(col_end - self._p * n_taus, 0)
+                pk[
+                    t * self._p : (t + 1) * self._p,
+                    col_start : col_end
+                ] = -1
 
             # apply the given prior knowledge
             for t in range(self._T):
-                for tau in range(self._n_lags + 1):
+                for tau in range(n_taus):
                     if t < tau:
                         continue
 
                     ix = np.ix_(
-                        np.arange(t * self._p, (t + 1) * self._p),
-                        np.arange((t - tau) * self._p, (t - tau + 1) * self._p)
+                        np.arange(
+                            t * self._p,
+                            (t + 1) * self._p
+                        ),
+                        np.arange(
+                            (t - tau) * self._p,
+                            (t - tau + 1) * self._p
+                        )
                     )
 
                     temp = pk[ix]
@@ -142,7 +153,11 @@ class LongitudinalLiNGAM:
                     temp[self._Aknw[t, tau] == 1] = 1
                     pk[ix] = temp
 
-            model = DirectLiNGAM(prior_knowledge=pk)
+            model = DirectLiNGAM(
+                prior_knowledge=pk,
+                measure=self._measure,
+                random_state=self._random_state
+            )
             model.fit(X_t.T)
 
             # split the estimated adjacency matrix
@@ -150,14 +165,12 @@ class LongitudinalLiNGAM:
             adj = np.array(np.split(adj, self._T, axis=1))
 
             # construct output matrices
-            adjs = np.zeros((self._T, self._n_lags + 1, self._p, self._p))
+            adjs = np.zeros((self._T, n_taus, self._p, self._p))
             for t in range(self._n_lags, self._T):
-                for lag in range(self._n_lags + 1):
+                for lag in range(n_taus):
                     adjs[t, lag] = adj[t, t - lag]
             adjs[:self._n_lags] = np.nan
             adjs[:, 1:] = adjs[:, 1:][:, ::-1]
-
-            self._adjacency_matrices = adjs
 
             # make causal_orders
             causal_orders = []
@@ -166,13 +179,13 @@ class LongitudinalLiNGAM:
                     causal_orders.append([np.nan for _ in range(self._p)])
                     continue
 
-                filter_ = list(map(
-                    lambda x: x in range(i * self._p, (i + 1) * self._p),
-                    model.causal_order_
-                ))
+                targets = range(i * self._p, (i + 1) * self._p)
+                filter_ = list(map(lambda x: x in targets, model.causal_order_))
                 causal_order = np.array(model.causal_order_)[filter_]
                 causal_order = causal_order - min(causal_order)
                 causal_orders.append(causal_order.tolist())
+
+            self._adjacency_matrices = adjs
             self._causal_orders = causal_orders
 
         return self
