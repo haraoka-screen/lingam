@@ -46,18 +46,16 @@ class LongitudinalLiNGAM:
             ``random_state`` is the seed used by the random number generator.
         """
         self._n_lags = n_lags
-        self._Aknw = prior_knowledge
         self._measure = measure
         self._random_state = random_state
         self._causal_orders = None
         self._adjacency_matrices = None
 
-        if self._Aknw is not None:
-            self._Aknw = check_array(self._Aknw, ensure_2d=False, allow_nd=True)
-            if len(self._Aknw.shape) != 4:
+        if prior_knowledge is not None:
+            prior_knowledge = check_array(prior_knowledge, ensure_2d=False, allow_nd=True)
+            if len(prior_knowledge.shape) != 4:
                 raise ValueError("prior_knowledge must be 4D.")
-
-            #self._Aknw = np.where(self._Aknw < 0, np.nan, self._Aknw)
+        self._Aknw = prior_knowledge
 
     def fit(self, X_list):
         """Fit the model to datasets.
@@ -174,14 +172,17 @@ class LongitudinalLiNGAM:
 
             # make causal_orders
             causal_orders = []
-            for i in range(self._T):
-                if i < self._n_lags:
+            for t in range(self._T):
+                if t < self._n_lags:
                     causal_orders.append([np.nan for _ in range(self._p)])
                     continue
 
-                targets = range(i * self._p, (i + 1) * self._p)
+                # extract causal_order at time t
+                targets = range(t * self._p, (t + 1) * self._p)
                 filter_ = list(map(lambda x: x in targets, model.causal_order_))
                 causal_order = np.array(model.causal_order_)[filter_]
+
+                # make numbers start from zero
                 causal_order = causal_order - min(causal_order)
                 causal_orders.append(causal_order.tolist())
 
